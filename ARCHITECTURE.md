@@ -97,12 +97,15 @@ vedic-parser/                  внешняя зависимость, чисты
 
 jyotish-map/                   маркетплейс плагинов Claude Code
 ├── .claude-plugin/marketplace.json
+├── .agents/skills/            путь обнаружения по открытому стандарту
 └── plugins/jyotish/           один плагин, самодостаточный
     ├── .claude-plugin/plugin.json
-    ├── prompts/               01…10 — методика, единственный источник правды
-    ├── templates/             вёрстка PDF
-    ├── skills/jyotish-reading/SKILL.md   порядок этапов, гейты, формат сводок
-    ├── commands/              /jyotish:collect, /jyotish:stage, /jyotish:check …
+    ├── skills/jyotish-reading/   бандл Agent Skills, читают Claude и ChatGPT
+    │   ├── SKILL.md           порядок этапов, гейты, два режима работы
+    │   ├── references/        01…10 — методика, единственный источник правды
+    │   ├── assets/            вёрстка PDF
+    │   └── scripts/jyotish    обёртка CLI с деградацией в ручной режим
+    ├── commands/              /jyotish:collect, /jyotish:stage … (только Claude)
     ├── jyotish/
     │   ├── collect.py         этап 01: парсер → raw/*.json (с кэшем)
     │   ├── derive.py          класс B: арудхи, диспозиторы, чара-караки
@@ -119,6 +122,12 @@ clients/<slug>/                состояние разбора, в .gitignore
 Плагин самодостаточен намеренно: `${CLAUDE_PLUGIN_ROOT}` не дотягивается за
 пределы каталога плагина, поэтому промпты, шаблон и код лежат внутри него, а не
 в корне репозитория.
+
+Методика живёт **внутри бандла скилла**, а не рядом с ним, по той же причине в
+квадрате: бандл Agent Skills загружается в ChatGPT одним архивом и должен быть
+полным сам по себе. Копия одна, `.agents/skills/` — ссылка на неё. Вендорные
+подстановки в `SKILL.md` запрещены и проверяются тестом: с ними бандл молча
+перестаёт работать везде, кроме одного агента.
 
 Состояние одного разбора:
 

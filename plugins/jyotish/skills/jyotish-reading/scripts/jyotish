@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Run the jyotish CLI from wherever this skill bundle happens to be installed.
+#
+# The skill is portable across agents, but the CLI is a Python package that has
+# to come from somewhere. Look in the three places it can be, in order of how
+# specific they are, and say plainly when it is in none of them — the skill has
+# a documented manual mode for exactly that case.
+
+set -euo pipefail
+
+if command -v jyotish >/dev/null 2>&1; then
+    exec jyotish "$@"
+fi
+
+# Installed as part of the Claude Code plugin: bin/ sits two levels up.
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+launcher="$here/../../../bin/jyotish"
+if [ -x "$launcher" ]; then
+    exec "$launcher" "$@"
+fi
+
+if python3 -c "import jyotish.cli" >/dev/null 2>&1; then
+    exec python3 -m jyotish.cli "$@"
+fi
+
+cat >&2 <<'MSG'
+jyotish: CLI недоступен в этом окружении.
+
+Это не ошибка скилла: методика рассчитана и на ручной режим. Смотрите раздел
+«Два режима» в SKILL.md — этап 01 выполняется по references/01_*.md вручную,
+данные присылает человек.
+
+Чтобы получить CLI:
+  pip install 'jyotish-map @ git+https://github.com/serg123e/jyotish-map#subdirectory=plugins/jyotish'
+MSG
+exit 127
