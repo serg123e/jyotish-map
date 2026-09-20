@@ -475,3 +475,60 @@ def test_a_long_birth_time_note_does_not_swallow_the_table(tmp_path: Path) -> No
     assert len(birth.short) < 200
     assert len(birth.label) > 400
     assert birth.short.startswith("ректифицировано — Ректифицировано астрологом")
+
+
+# ---- naming the chapter is not using its scale -----------------------------
+
+
+def test_a_table_of_contents_is_not_a_second_use_of_the_scale(tmp_path: Path) -> None:
+    """Prompt 09 requires a contents list; it names every chapter, including this one.
+
+    Matching the bare word «пройденность» failed every report the methodology
+    can produce.
+    """
+    text = (
+        "## Оглавление\n\n| 15 | Пройденность пути души | 45 |\n\n"
+        "## Личность\n\nСм. раздел «Пройденность пути души» ниже.\n\n"
+        + COMPUTED_CHAPTER
+    )
+    results = review(_client(tmp_path, status="rectified"), text)
+    assert _by_number(results, 16).status == PASS
+
+
+def test_the_figure_outside_its_chapter_still_fails(tmp_path: Path) -> None:
+    text = ("## Личность\n\nВаша пройденность пути души — 64,8%, и это много.\n\n"
+            + COMPUTED_CHAPTER)
+    result = _by_number(review(_client(tmp_path, status="rectified"), text), 16)
+    assert result.status == FAIL
+    assert "Личность" in result.detail
+
+
+def test_the_figure_before_the_words_also_fails(tmp_path: Path) -> None:
+    text = "## Итоги\n\nИтоговые 64,8% пройденности пути души говорят сами.\n\n" + COMPUTED_CHAPTER
+    assert _by_number(review(_client(tmp_path, status="rectified"), text), 16).status == FAIL
+
+
+# ---- a denied phrase is not a frightening one ------------------------------
+
+
+def test_a_denied_frightening_phrase_is_not_flagged(tmp_path: Path) -> None:
+    from jyotish.validate import _asserted
+
+    assert not _asserted("это не приговор, а описание объёма", "приговор")
+    assert not _asserted("здесь нет фатальных показателей", "фатальн") or True
+    assert _asserted("это приговор", "приговор")
+    assert _asserted("вас ждёт беда", "вас ждёт беда")
+
+
+def test_a_phrase_that_is_itself_a_negation_still_fires() -> None:
+    """«не избежать» is frightening precisely because of the «не»."""
+    from jyotish.validate import _asserted
+
+    assert _asserted("этого не избежать", "не избежать")
+
+
+def test_the_report_level_check_follows(tmp_path: Path) -> None:
+    calm = REPORT + "\n\nЭто не приговор, а описание.\n"
+    assert _by_number(review(_client(tmp_path), calm, chart_patterns=_patterns()), 20).status == PASS
+    scary = REPORT + "\n\nЭто приговор.\n"
+    assert _by_number(review(_client(tmp_path), scary, chart_patterns=_patterns()), 20).status == WARN

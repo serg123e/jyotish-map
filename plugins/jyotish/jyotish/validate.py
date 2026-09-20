@@ -313,10 +313,17 @@ def _scale_checks(client: Client, text: str, lower: str) -> list[Result]:
         results.append(Result(BY_NUMBER[18], SKIP, "главы о пути души в тексте нет"))
     else:
         title, body = soul_chapter
+        # A percentage is what makes it *use* of the scale. Matching the bare
+        # word failed every report the methodology can produce: Prompt 09
+        # requires a table of contents, and the contents list the chapter by
+        # name. A cross-reference is not a second use of the scale.
+        scale_used = re.compile(
+            r"(?:пройденност\w*|пут\w+\s+душ\w+)[^.\n]{0,40}?\d{1,3}(?:[.,]\d+)?\s*%"
+            r"|\d{1,3}(?:[.,]\d+)?\s*%[^.\n]{0,30}?(?:пройденност\w*|пут\w+\s+душ\w+)"
+        )
         elsewhere = [
             other_title for other_title, other_body in chapters
-            if other_title != title and re.search(r"пройденност|пут\w+ душ\w+\s*[:—-]?\s*\d+\s*%",
-                                                  other_body.lower())
+            if other_title != title and scale_used.search(other_body.lower())
         ]
         results.append(Result(
             BY_NUMBER[16],
@@ -441,8 +448,9 @@ def _text_checks(
         else "нет файла MISSING_DATA: неясно, зафиксированы ли пробелы",
     ))
 
-    # 20: frightening phrasings.
-    found = sorted({phrase for phrase in FRIGHTENING if phrase in lower})
+    # 20: frightening phrasings. "Это не приговор" is the opposite of one, and
+    # flagging it every time teaches people to skim past the warning.
+    found = sorted({phrase for phrase in FRIGHTENING if _asserted(lower, phrase)})
     results.append(Result(
         BY_NUMBER[20],
         WARN if found else PASS,
@@ -503,6 +511,20 @@ ROLES_TABLE = (
     r"табли\w+ функциональн",         # прямое указание на таблицу
     r"функциональн\w+ рол\w+ планет",
 )
+
+
+def _asserted(lower: str, phrase: str) -> bool:
+    """Whether a frightening phrase is used rather than denied.
+
+    «Это не приговор» and «без гарантий» say the opposite of what the substring
+    says. Phrases that already begin with a negation are matched as they are.
+    """
+    negated = phrase.startswith(("не ", "без "))
+    for match in re.finditer(re.escape(phrase), lower):
+        before = lower[max(0, match.start() - 12):match.start()]
+        if negated or not re.search(r"\b(?:не|без)\s+$", before):
+            return True
+    return False
 
 
 def _roles_table_at(lower: str) -> int:
