@@ -168,7 +168,7 @@ def convert(md: str) -> str:
     def flush_all() -> None:
         flush_paragraph(); flush_table(); flush_list(); flush_quote()
 
-    for line in lines:
+    for index, line in enumerate(lines):
         stripped = line.strip()
 
         if stripped.startswith("|"):
@@ -189,7 +189,12 @@ def convert(md: str) -> str:
 
         if stripped == "---":
             flush_all()
-            out.append('<div class="divider">✦ ✦ ✦</div>')
+            # A divider right before a chapter heading has nothing to divide:
+            # the chapter starts a new page anyway, and the flourish alone was
+            # left twice on a page of its own.
+            following = next((l.strip() for l in lines[index + 1:] if l.strip()), "")
+            if not following.startswith("## "):
+                out.append('<div class="divider">✦ ✦ ✦</div>')
             continue
 
         # «**Опора 76 · уверенность средняя · подтверждено биографией**» —
@@ -247,8 +252,29 @@ def convert(md: str) -> str:
     return "\n".join(out)
 
 
+def chapter_sequence_problems(text: str) -> list[str]:
+    """Numbered chapters repeated or out of order — a pasted block, not a choice.
+
+    The first PDF went out with chapters 3–5 and patterns 7–10 printed twice.
+    The same check lives in jyotish.validate (item 26); it is repeated here
+    because the build must refuse on its own, without the package installed.
+    """
+    numbers = [int(m.group(1)) for m in re.finditer(r"^##\s+(\d{1,2})\.\s", text, re.M)]
+    problems, seen = [], set()
+    for previous, current in zip([0] + numbers, numbers):
+        if current in seen:
+            problems.append(f"глава {current} встречается повторно")
+        elif current < previous:
+            problems.append(f"глава {current} идёт после главы {previous}")
+        seen.add(current)
+    return problems
+
+
 def build(root: Path) -> Path:
     report = (root / "report.md").read_text(encoding="utf-8")
+    broken = chapter_sequence_problems(report)
+    if broken:
+        raise SystemExit("report.md не собирается: " + "; ".join(broken))
     template = TEMPLATE.read_text(encoding="utf-8")
     style = template.split("<style>")[1].split("</style>")[0]
 
@@ -286,7 +312,10 @@ def build(root: Path) -> Path:
   table {{ page-break-inside: auto; }}
   thead {{ display: table-header-group; }}
   tr {{ page-break-inside: avoid; }}
-  .stone, .card, .callout {{ page-break-inside: auto; }}
+  .stone, .card {{ page-break-inside: auto; }}
+  /* A callout is a few lines; splitting it left its last line alone on a
+     page. Blocks that can run long stay splittable, this one does not. */
+  .callout {{ page-break-inside: avoid; }}
   p, li {{ orphans: 2; widows: 2; }}
   .scale-row {{ margin: 2px 0 12px; font-size: 10.5pt; page-break-after: avoid; }}
   .stone h3 {{ margin-top: 2px; }}

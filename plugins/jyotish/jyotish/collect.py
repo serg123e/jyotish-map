@@ -234,7 +234,9 @@ def collect(
     whose parser is missing, so the response can be parsed later without
     asking the site again.
     """
-    client.ensure_dirs()
+    # Only the cache directory: a sweep for a shifted chart (sensitivity)
+    # lives in a scratch root that must not sprout stages/ and state/.
+    client.raw_dir.mkdir(parents=True, exist_ok=True)
     planned = list(plan if plan is not None else build_plan(client))
     _check_cache_identity(client, refresh=refresh)
 

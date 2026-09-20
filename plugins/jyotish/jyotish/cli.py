@@ -5,6 +5,7 @@
     jyotish status clients/ivan      # what is collected, what is missing
     jyotish soul-path clients/ivan   # stage 07: weights x scores, refuses if the gate is shut
     jyotish crosscheck clients/ivan  # recompute locally and report every disagreement
+    jyotish sensitivity clients/ivan # re-collect at ±N minutes: which vargas survive
     jyotish check clients/ivan       # stage 10: the checklist, as far as code can take it
 """
 
@@ -18,7 +19,7 @@ from typing import Sequence
 
 from vedic_parser.session import VedicHoroError
 
-from . import crosscheck, patterns, render_raw, soul_path, validate
+from . import crosscheck, patterns, render_raw, sensitivity, soul_path, validate
 from .client import Client, ConfigError, scaffold
 from .collect import RateLimited, build_plan, collect, from_cache
 from .derive import derive_all
@@ -67,6 +68,21 @@ def build_parser() -> argparse.ArgumentParser:
         "crosscheck", help="сверить данные сайта с независимым локальным расчётом")
     cross_cmd.add_argument("client")
     cross_cmd.set_defaults(handler=_cmd_crosscheck)
+
+    sens_cmd = sub.add_parser(
+        "sensitivity",
+        help="пересобрать карту на ±N минут и показать, что от этого меняется")
+    sens_cmd.add_argument("client")
+    sens_cmd.add_argument("--window", type=int, default=3,
+                          help="сколько минут в каждую сторону (по умолчанию 3)")
+    sens_cmd.add_argument("--step", type=int, default=1, help="шаг в минутах")
+    sens_cmd.add_argument("--vargas", default=None,
+                          help="какие варги сравнивать, через запятую (по умолчанию все из chart.yaml)")
+    sens_cmd.add_argument("--refresh", action="store_true",
+                          help="перезапросить смещённые карты, игнорируя кэш")
+    sens_cmd.add_argument("--plan-only", action="store_true",
+                          help="показать число запросов и выйти")
+    sens_cmd.set_defaults(handler=_cmd_sensitivity)
 
     check_cmd = sub.add_parser("check", help="этап 10: чек-лист качества")
     check_cmd.add_argument("client")
@@ -234,6 +250,49 @@ def _cmd_crosscheck(args: argparse.Namespace) -> int:
         print(f"  ✗ {finding.subject}: {finding.site} против {finding.local}")
     print(path)
     return 1 if conflicts else 0
+
+
+def _cmd_sensitivity(args: argparse.Namespace) -> int:
+    client = Client.load(args.client)
+    vargas = tuple(v.strip() for v in args.vargas.split(",") if v.strip()) \
+        if args.vargas else client.collect.vargas
+    try:
+        shifts = sensitivity.offsets(args.window, args.step)
+    except ValueError as error:
+        raise ConfigError(str(error)) from error
+
+    per_offset = len(sensitivity.build_offset_plan(vargas))
+    total = per_offset * len(shifts)
+    if args.plan_only:
+        print(f"{len(shifts)} смещений × {per_offset} запросов = {total}, "
+              f"~{total * client.collect.throttle / 60:.0f} мин при "
+              f"throttle={client.collect.throttle}s")
+        return 0
+
+    print(f"{client.slug}: {client.chart.time}, окно ±{args.window} мин, "
+          f"{total} запросов (кэш в {client.root / 'sensitivity'})")
+    try:
+        report = sensitivity.run(
+            client, window=args.window, step=args.step, vargas=vargas,
+            refresh=args.refresh, log=lambda message: print(message, flush=True),
+        )
+    except sensitivity.NotCollected as error:
+        print(f"{error}", file=sys.stderr)
+        return 1
+    except RateLimited as error:
+        print(f"\n{error}", file=sys.stderr)
+        return 2
+
+    md, _ = sensitivity.write(report)
+    print()
+    for varga in report.vargas:
+        if varga in report.stable:
+            low, high = report.stable[varga]
+            print(f"  {varga}: {'устойчива во всём окне' if report.whole_window(varga) else f'{low:+d}…{high:+d} мин'}")
+    if report.days_per_minute is not None:
+        print(f"  даши: {number(abs(report.days_per_minute), 1)} дня за минуту")
+    print(md)
+    return 0
 
 
 def _cmd_check(args: argparse.Namespace) -> int:

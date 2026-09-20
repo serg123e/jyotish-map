@@ -50,12 +50,12 @@ REPORT = """
 ## 6. Здоровье
 
 Тенденция к перегрузке. При любых симптомах приоритет у врача, не у карты.
-
+""" + SOUL_CHAPTER + """
 ## 16. Камни
 
 Сначала таблица функциональных ролей планет, затем назначение.
 Основной камень подбирается после неё.
-""" + SOUL_CHAPTER
+"""
 
 #: A rectified time is a claim and carries its evidence; the tests state it
 #: the way a real chart.yaml must.
@@ -540,3 +540,31 @@ def test_the_report_level_check_follows(tmp_path: Path) -> None:
     assert _by_number(review(_client(tmp_path), calm, chart_patterns=_patterns()), 20).status == PASS
     scary = REPORT + "\n\nЭто приговор.\n"
     assert _by_number(review(_client(tmp_path), scary, chart_patterns=_patterns()), 20).status == WARN
+
+
+# ---- a repeated chapter is not a matter of judgement ------------------------
+
+
+def test_a_chapter_printed_twice_fails_check_twenty_six(tmp_path: Path) -> None:
+    """The first PDF shipped with chapters 3–5 twice. Nothing had looked."""
+    text = REPORT + "\n## 3. Сферы\n\nтекст\n\n## 4. История\n\n## 3. Сферы\n\nтекст\n"
+    result = _by_number(review(_client(tmp_path), text), 26)
+    assert result.status == FAIL
+    assert "глава 3 встречается повторно" in result.detail
+
+
+def test_a_chapter_out_of_order_fails_check_twenty_six(tmp_path: Path) -> None:
+    text = REPORT + "\n## 9. Позже\n\nтекст\n"
+    result = _by_number(review(_client(tmp_path), text), 26)
+    assert result.status == FAIL
+    assert "глава 9 идёт после главы 16" in result.detail
+
+
+def test_ordered_chapters_leave_twenty_six_to_the_reader(tmp_path: Path) -> None:
+    """Skipping a number is a choice; only repeats and reversals are defects."""
+    assert validate.chapter_sequence_problems("## 1. А\n## 3. Б\n## 16. В\n") == []
+    assert _by_number(review(_client(tmp_path), REPORT), 26).status == MANUAL
+
+
+def test_pattern_headings_at_level_three_are_not_chapters() -> None:
+    assert validate.chapter_sequence_problems("## 2. Паттерны\n### 7. Близость\n### 8. Возврат\n## 3. Сферы\n") == []

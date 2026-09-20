@@ -115,6 +115,7 @@ jyotish-map/                   маркетплейс плагинов Claude Co
     │   ├── patterns.py        10 паттернов и правило независимости
     │   ├── validate.py        класс D: чек-лист 10 + правила README
     │   ├── crosscheck.py      второй независимый расчёт и разбор расхождений
+    │   ├── sensitivity.py     карта на ±N минут: интервал устойчивости варг и даш
     │   └── report.py          md → html по шаблону → pdf (фаза 5)
     └── tests/
 clients/<slug>/                состояние разбора, в .gitignore

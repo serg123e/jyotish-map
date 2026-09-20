@@ -458,6 +458,15 @@ def _text_checks(
         else "запугивающих оборотов не найдено",
     ))
 
+    # 26: whether one thought repeats in two chapters is for a reader — but
+    # a whole chapter repeated is not a matter of judgement. The first full
+    # reading shipped a PDF with patterns 7–10 and chapters 3–5 printed twice:
+    # an edit during stage 10 pasted 480 lines back into report.md, and nothing
+    # in the pipeline looked at the sequence of chapter headings.
+    broken = chapter_sequence_problems(text)
+    if broken:
+        results.append(Result(BY_NUMBER[26], FAIL, "; ".join(broken)))
+
     # 22: the table of functional roles comes before any stone is assigned.
     # Matched against an actual recommendation, not the word "камни" — the
     # chapter heading always precedes the table that lives inside it, so a
@@ -541,6 +550,24 @@ def terminology_share(text: str) -> tuple[float, int]:
         return 0.0, 0
     terms = sum(1 for word in words if word.startswith(TERM_STEMS))
     return terms / len(words) * 100, len(words)
+
+
+def chapter_sequence_problems(text: str) -> list[str]:
+    """Numbered chapters («## 7. Название») out of order or repeated.
+
+    Numbers may skip (a merged chapter is a choice) but never repeat and never
+    go backwards: both mean a block was pasted where it does not belong.
+    """
+    numbers = [int(m.group(1)) for m in re.finditer(r"^##\s+(\d{1,2})\.\s", text, re.M)]
+    problems = []
+    seen: set[int] = set()
+    for previous, current in zip([0] + numbers, numbers):
+        if current in seen:
+            problems.append(f"глава {current} встречается повторно")
+        elif current < previous:
+            problems.append(f"глава {current} идёт после главы {previous}")
+        seen.add(current)
+    return problems
 
 
 def _chapters(text: str) -> list[tuple[str, str]]:
