@@ -411,12 +411,30 @@ def _probe_html(
     return path
 
 
+def _parser_version() -> str:
+    """Version of vedic-parser, so a cache never outlives the code that wrote it.
+
+    A parser that starts reading a response differently makes every cached
+    response from before it suspect. That is not hypothetical: a version that
+    mis-assigned the columns of the planets table did not fail, it silently
+    shifted every value after Navamsa by one, and the wrong numbers sat in the
+    cache looking exactly like right ones.
+    """
+    try:
+        from importlib.metadata import version
+
+        return version("vedic-parser")
+    except Exception:
+        return "unknown"
+
+
 def _identity(client: Client) -> dict[str, str]:
     chart = client.chart
     return {
         "date": chart.date, "time": chart.time, "timezone": chart.timezone,
         "latitude": chart.latitude, "longitude": chart.longitude,
         "lang": client.collect.lang,
+        "parser": _parser_version(),
     }
 
 
@@ -433,6 +451,12 @@ def _check_cache_identity(client: Client, *, refresh: bool) -> None:
     if stored == _identity(client) or refresh:
         return
     changed = [k for k, v in _identity(client).items() if stored.get(k) != v]
+    if changed == ["parser"]:
+        raise VedicHoroError(
+            f"кэш собран парсером версии {stored.get('parser')}, установлена "
+            f"{_parser_version()}. Разбор ответов мог измениться — запустите "
+            "с --refresh, чтобы пересобрать."
+        )
     raise VedicHoroError(
         "кэш собран для других параметров карты (изменилось: "
         f"{', '.join(changed)}). Запустите с --refresh, чтобы пересобрать."
