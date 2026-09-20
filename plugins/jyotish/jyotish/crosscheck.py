@@ -47,6 +47,13 @@ BODY_CODES = {
     "North Node": "Ra", "South Node": "Ke",
 }
 
+#: Bump when a comparison rule changes — a tolerance, what is compared,
+#: which blocks get a verdict. The ledger is keyed by this too: «сошлось»
+#: under one rule is not evidence about another. Raised to 2 when the
+#: dasha check stopped comparing boundaries and started comparing lords,
+#: durations and the uniformity of the shift.
+CHECKS_VERSION = 2
+
 NODE_NAMES = {"mean": "средний", "true": "истинный"}
 
 #: The seven bodies whose positions both sources compute the same way. The nodes
@@ -64,11 +71,28 @@ EPHEMERIS_KEYS = {
 TOLERANCE_OK = 2.0
 TOLERANCE_WARN = 30.0
 
-#: Hours a dasha boundary may differ and still count as the same boundary. The
-#: Vimshottari start is absurdly sensitive to the Moon: 3″ of longitude move
-#: it by twelve hours, while one minute of birth time moves it by five days.
-#: A boundary that agrees to a day agrees as well as the birth time allows.
-DASHA_TOLERANCE_HOURS = 24.0
+#: What a Vimshottari comparison may differ by, and why each number is what
+#: it is. Measured against the site on eleven charts a minute apart:
+#:
+#: * **Durations** matched to 1–2 minutes every time — the site prints its
+#:   timestamps to the minute, and that is the whole of it. This is the sharp
+#:   test: it says the year length and the proportions agree exactly.
+#: * **The shift of the whole tree** was one and the same for every period,
+#:   to within 5–6 minutes. So the two calculations differ by an anchor, not
+#:   by arithmetic.
+#: * **The anchor itself** drifted by up to four days, erratically, with the
+#:   site's own start times landing on whole days. The site expresses the
+#:   elapsed part of the first mahadasha as years/months/days and subtracts
+#:   it with calendar arithmetic, so its anchor carries the difference
+#:   between nominal and actual month lengths. Ours is exact.
+#:
+#: Four days sounds generous until you price a real error: one arcminute of
+#: ayanamsa moves the anchor by six months, and a wrong nakshatra lord
+#: changes the lords outright. Both are caught. What is *not* worth catching
+#: is the site's own rounding.
+DASHA_DURATION_TOLERANCE_MINUTES = 5.0
+DASHA_UNIFORM_SHIFT_TOLERANCE_MINUTES = 15.0
+DASHA_ANCHOR_TOLERANCE_DAYS = 5.0
 
 OK = "совпало"
 WARN = "внимание"
@@ -580,6 +604,13 @@ def _pyjhora_ashtakavarga(report: Report, backend: Any, collection: dict[str, An
 
 
 def _pyjhora_dashas(report: Report, backend: Any, collection: dict[str, Any]) -> None:
+    """Compare the dasha tree by what the two sides actually compute.
+
+    Not boundary against boundary: the site rounds its anchor and ours is
+    exact, so that comparison measures the site's rounding. Three things are
+    compared instead — the lords, the durations, and whether the whole tree
+    is shifted by one and the same amount. See the tolerances above.
+    """
     for level in (1, 2):
         key = f"show-dasha-vimshottari-{level}"
         site_periods = (collection.get(key) or {}).get("periods") or []
@@ -587,21 +618,45 @@ def _pyjhora_dashas(report: Report, backend: Any, collection: dict[str, Any]) ->
             continue
         local_periods = backend.vimshottari(level)["periods"]
         same_lords = [p["lords"] for p in site_periods] == [p["lords"] for p in local_periods]
-        worst = 0.0
+
+        durations, shifts = [], []
         for here, there in zip(site_periods, local_periods):
-            delta = (datetime.fromisoformat(there["start"]) - datetime.fromisoformat(here["start"]))
-            worst = max(worst, abs(delta.total_seconds()) / 3600)
-        status = OK if same_lords and worst <= DASHA_TOLERANCE_HOURS else CONFLICT
+            shifts.append((datetime.fromisoformat(there["start"])
+                           - datetime.fromisoformat(here["start"])).total_seconds() / 60)
+            site_span = (datetime.fromisoformat(here["end"])
+                         - datetime.fromisoformat(here["start"])).total_seconds() / 60
+            local_span = (datetime.fromisoformat(there["end"])
+                          - datetime.fromisoformat(there["start"])).total_seconds() / 60
+            durations.append(abs(site_span - local_span))
+
+        worst_duration = max(durations) if durations else 0.0
+        spread = (max(shifts) - min(shifts)) if shifts else 0.0
+        anchor_days = abs(shifts[0]) / 1440 if shifts else 0.0
+
+        problems = []
+        if not same_lords:
+            problems.append("**порядок управителей разный**")
+        if worst_duration > DASHA_DURATION_TOLERANCE_MINUTES:
+            problems.append(f"**длительности расходятся до {worst_duration:.0f} мин** — "
+                            "это уже не округление, а другая длина года или доли")
+        if spread > DASHA_UNIFORM_SHIFT_TOLERANCE_MINUTES:
+            problems.append(f"**сдвиг неодинаков по дереву** (разброс {spread:.0f} мин) — "
+                            "расходится не точка отсчёта, а сам расчёт")
+        if anchor_days > DASHA_ANCHOR_TOLERANCE_DAYS:
+            problems.append(f"**точка отсчёта смещена на {anchor_days:.1f} сут** — "
+                            "больше, чем объясняется округлением баланса у сайта")
+
+        status = OK if not problems else CONFLICT
         report.verified[key] = status
         report.findings.append(Finding(
-            subject=f"Вимшоттари, уровень {level}: границы {len(site_periods)} периодов",
+            subject=f"Вимшоттари, уровень {level}: {len(site_periods)} периодов",
             status=status,
             site=site_periods[0]["start"], local=local_periods[0]["start"],
-            note=(f"порядок управителей {'совпал' if same_lords else '**разный**'}; "
-                  f"границы расходятся не больше чем на {worst:.1f} ч"
-                  + ("" if worst <= DASHA_TOLERANCE_HOURS else " — **больше суток**")
-                  + ". Двенадцать часов здесь — три угловые секунды Луны; минута "
-                    "времени рождения сдвигает те же границы на пять суток."),
+            note="; ".join(problems) if problems else
+                 (f"управители совпали, длительности до {worst_duration:.0f} мин, "
+                  f"всё дерево сдвинуто одинаково (разброс {spread:.0f} мин) на "
+                  f"{anchor_days * 24:.1f} ч: сайт считает баланс в целых днях и "
+                  "вычитает его календарно, наш расчёт точный"),
         ))
 
 

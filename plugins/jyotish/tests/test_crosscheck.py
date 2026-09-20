@@ -335,11 +335,13 @@ def test_verdicts_are_per_block_and_written_for_collect(tmp_path) -> None:
         "show-info-D1": {"ashtakavarga": {"sav": [27, 28, 42, 25, 21, 29, 23, 25, 30, 32, 34, 21],
                                           "bav": {"Su": [5, 2, 7, 2, 2, 6, 3, 4, 3, 5, 4, 5]}}},
         "show-dasha-vimshottari-1": {"periods": [
-            {"lords": ["Ve"], "start": "1964-05-02T05:27"}, {"lords": ["Su"], "start": "1984-05-02T08:31"}]},
+            {"lords": ["Ve"], "start": "1964-05-02T05:27", "end": "1984-05-02T08:31"},
+            {"lords": ["Su"], "start": "1984-05-02T08:31", "end": "1990-05-02T21:27"}]},
     }
     backend = StandIn(
         charts={"D9": {"As": "Sg", "Mo": "Sc"}, "D60": {"As": "Sg", "Mo": "Ar"}},
-        dashas={1: [{"lords": ["Ve"], "start": "1964-05-01T17:16"}, {"lords": ["Su"], "start": "1984-05-01T20:20"}]},
+        dashas={1: [{"lords": ["Ve"], "start": "1964-05-01T17:16", "end": "1984-05-01T20:20"},
+                    {"lords": ["Su"], "start": "1984-05-01T20:20", "end": "1990-05-02T09:16"}]},
         sav=[27, 28, 42, 25, 21, 29, 23, 25, 30, 32, 34, 21],
         bav={"Su": [5, 2, 7, 2, 2, 6, 3, 4, 3, 5, 4, 5]},
     )
@@ -350,7 +352,7 @@ def test_verdicts_are_per_block_and_written_for_collect(tmp_path) -> None:
     assert report.verified["show-chart-D9"] == OK
     assert report.verified["show-chart-D60"] == CONFLICT
     assert report.verified["ashtakavarga"] == OK
-    assert report.verified["show-dasha-vimshottari-1"] == OK      # 12 h, within a day
+    assert report.verified["show-dasha-vimshottari-1"] == OK      # сдвиг ровный, длительности те же
     assert report.replaceable == ["ashtakavarga", "show-chart-D9", "show-dasha-vimshottari-1"]
 
     client = Client.from_dict({"slug": "t", "date": "20.03.1980", "time": "07:45:00",
@@ -360,15 +362,63 @@ def test_verdicts_are_per_block_and_written_for_collect(tmp_path) -> None:
     assert read_verified(client)["show-chart-D60"] == CONFLICT
 
 
-def test_a_dasha_boundary_more_than_a_day_off_is_a_conflict() -> None:
+def _dasha_rows(starts_and_ends):
+    return [{"lords": ["Ve" if i == 0 else "Su"], "start": s, "end": e}
+            for i, (s, e) in enumerate(starts_and_ends)]
+
+
+def test_a_uniformly_shifted_tree_is_the_sites_rounding_not_a_disagreement() -> None:
+    """The site rounds its anchor to whole days; the arithmetic still agrees."""
     from jyotish.crosscheck import _pyjhora_dashas
 
-    site = {"show-dasha-vimshottari-1": {"periods": [{"lords": ["Ve"], "start": "1964-05-02T05:27"}]}}
-    backend = StandIn({}, {1: [{"lords": ["Ve"], "start": "1964-05-04T05:27"}]}, [], {})
+    site = {"show-dasha-vimshottari-1": {"periods": _dasha_rows([
+        ("1964-05-02T05:27", "1984-05-02T08:31"), ("1984-05-02T08:31", "1990-05-02T21:27")])}}
+    backend = StandIn({}, {1: _dasha_rows([                       # ровно на 12 ч раньше
+        ("1964-05-01T17:27", "1984-05-01T20:31"), ("1984-05-01T20:31", "1990-05-02T09:27")])}, [], {})
+    report = Report()
+    _pyjhora_dashas(report, backend, site)
+    assert report.verified["show-dasha-vimshottari-1"] == OK
+    assert "сдвинуто одинаково" in report.findings[0].note
+
+
+def test_durations_that_differ_are_a_conflict_however_small_the_shift() -> None:
+    """A different year length shows up in the spans, not in the anchor."""
+    from jyotish.crosscheck import _pyjhora_dashas
+
+    site = {"show-dasha-vimshottari-1": {"periods": _dasha_rows([
+        ("1964-05-02T05:27", "1984-05-02T05:27")])}}
+    backend = StandIn({}, {1: _dasha_rows([
+        ("1964-05-02T05:27", "1984-06-02T05:27")])}, [], {})      # период длиннее на месяц
     report = Report()
     _pyjhora_dashas(report, backend, site)
     assert report.verified["show-dasha-vimshottari-1"] == CONFLICT
-    assert "больше суток" in report.findings[0].note
+    assert "длительности расходятся" in report.findings[0].note
+
+
+def test_a_tree_shifted_unevenly_is_a_conflict() -> None:
+    from jyotish.crosscheck import _pyjhora_dashas
+
+    site = {"show-dasha-vimshottari-1": {"periods": _dasha_rows([
+        ("1964-05-02T05:27", "1984-05-02T05:27"), ("1984-05-02T05:27", "1990-05-02T05:27")])}}
+    backend = StandIn({}, {1: _dasha_rows([
+        ("1964-05-02T05:27", "1984-05-02T05:27"), ("1984-05-03T05:27", "1990-05-03T05:27")])}, [], {})
+    report = Report()
+    _pyjhora_dashas(report, backend, site)
+    assert report.verified["show-dasha-vimshottari-1"] == CONFLICT
+    assert "сдвиг неодинаков" in report.findings[0].note
+
+
+def test_an_anchor_further_than_the_sites_rounding_is_a_conflict() -> None:
+    from jyotish.crosscheck import _pyjhora_dashas
+
+    site = {"show-dasha-vimshottari-1": {"periods": _dasha_rows([
+        ("1964-05-02T05:27", "1984-05-02T05:27")])}}
+    backend = StandIn({}, {1: _dasha_rows([
+        ("1964-05-20T05:27", "1984-05-20T05:27")])}, [], {})      # 18 суток
+    report = Report()
+    _pyjhora_dashas(report, backend, site)
+    assert report.verified["show-dasha-vimshottari-1"] == CONFLICT
+    assert "точка отсчёта смещена" in report.findings[0].note
 
 
 def test_read_verified_is_empty_without_a_check(tmp_path) -> None:

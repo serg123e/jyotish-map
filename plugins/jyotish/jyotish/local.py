@@ -42,6 +42,13 @@ from typing import Any
 from .client import Client
 from .derive import SIGN_CODES, SIGNS_EN
 
+#: Bump whenever anything below changes how a number comes out — the
+#: ayanamsa, the position flags, the node type, a chart method, the
+#: Ashtakavarga table, the dasha year. The ledger of cross-check verdicts
+#: is keyed by this: observations made by other arithmetic are not
+#: evidence about this one.
+CONVENTIONS_VERSION = 1
+
 PLANET_CODES = ("Su", "Mo", "Ma", "Me", "Ju", "Ve", "Sa", "Ra", "Ke")
 PLANET_NAMES = {
     "Su": "Sun", "Mo": "Moon", "Ma": "Mars", "Me": "Mercury", "Ju": "Jupiter",

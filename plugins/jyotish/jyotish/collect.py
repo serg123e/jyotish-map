@@ -215,8 +215,15 @@ SOURCES = ("site", "local", "auto")
 NEVER_LOCAL = ("show-info-D1",)
 
 
-def local_allowed(source: str, key: str, verified: dict[str, str]) -> bool:
-    """Whether ``key`` may be computed locally under ``source``."""
+def local_allowed(source: str, key: str, verified: dict[str, str],
+                  established: Iterable[str] = ()) -> bool:
+    """Whether ``key`` may be computed locally under ``source``.
+
+    Under ``auto`` the verdict for this chart decides when there is one —
+    including a negative verdict, which the ledger can never overrule. With
+    no verdict for this chart, a block established across other charts
+    (:mod:`jyotish.ledger`) is taken locally.
+    """
     if source not in SOURCES:
         raise ValueError(f"source: ожидалось одно из {SOURCES}, получено {source!r}")
     if source == "site" or key in NEVER_LOCAL:
@@ -225,7 +232,9 @@ def local_allowed(source: str, key: str, verified: dict[str, str]) -> bool:
         return False
     if source == "local":
         return True
-    return verified.get(key) == "совпало"
+    if key in verified:
+        return verified[key] == "совпало"
+    return key in set(established)
 
 
 def from_cache(client: Client, *, plan: Iterable[Request] | None = None) -> Collection:
@@ -260,6 +269,7 @@ def collect(
     session: Session | None = None,
     source: str = "auto",
     verified: dict[str, str] | None = None,
+    established: Iterable[str] | None = None,
     log: Callable[[str], None] = lambda message: None,
 ) -> Collection:
     """Run the plan, using the cache for anything already fetched.
@@ -267,18 +277,23 @@ def collect(
     ``refresh`` re-fetches everything. ``probe`` saves the raw HTML of actions
     whose parser is missing, so the response can be parsed later without
     asking the site again. ``source`` picks where each block comes from (see
-    :data:`SOURCES`); ``verified`` is the cross-check's verdict per key,
-    read from the reading's state when not given.
+    :data:`SOURCES`); ``verified`` is the cross-check's verdict per key, read
+    from the reading's state when not given, and ``established`` the blocks
+    confirmed across other charts, read from the ledger when not given.
     """
     # Only the cache directory: a sweep for a shifted chart (sensitivity)
     # lives in a scratch root that must not sprout stages/ and state/.
     client.raw_dir.mkdir(parents=True, exist_ok=True)
     planned = list(plan if plan is not None else build_plan(client))
     _check_cache_identity(client, refresh=refresh)
-    if verified is None and source == "auto":
-        from .crosscheck import read_verified
-        verified = read_verified(client)
-    verified = verified or {}
+    if source == "auto":
+        if verified is None:
+            from .crosscheck import read_verified
+            verified = read_verified(client)
+        if established is None:
+            from .ledger import established as established_blocks
+            established = established_blocks()
+    verified, established = verified or {}, set(established or ())
 
     result = Collection()
     api = _load_api()
@@ -303,7 +318,7 @@ def collect(
         func = api.get(API_NAMES.get(request.action, ""))
         section = SECTIONS.get(request.action, "")
 
-        if local_allowed(source, request.key, verified):
+        if local_allowed(source, request.key, verified, established):
             if backend is None:
                 backend = local_module.Backend(client)
             payload = backend.payload(request.key)

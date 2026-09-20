@@ -21,7 +21,8 @@ from typing import Sequence
 
 from vedic_parser.session import VedicHoroError
 
-from . import crosscheck, patterns, progress, render_raw, report, sensitivity, soul_path, validate
+from . import (crosscheck, ledger, patterns, progress, render_raw, report, sensitivity,
+               soul_path, validate)
 from .client import Client, ConfigError, scaffold
 from .collect import RateLimited, build_plan, collect, from_cache
 from .derive import derive_all
@@ -78,7 +79,17 @@ def build_parser() -> argparse.ArgumentParser:
     cross_cmd = sub.add_parser(
         "crosscheck", help="сверить данные сайта с независимым локальным расчётом")
     cross_cmd.add_argument("client")
+    cross_cmd.add_argument("--no-ledger", action="store_true",
+                           help="не записывать вердикты в общий журнал сверки")
     cross_cmd.set_defaults(handler=_cmd_crosscheck)
+
+    ledger_cmd = sub.add_parser(
+        "ledger", help="журнал сверки: что подтверждено между картами")
+    ledger_cmd.add_argument("--threshold", type=int, default=ledger.DEFAULT_THRESHOLD,
+                            help=f"сколько карт должны совпасть (по умолчанию {ledger.DEFAULT_THRESHOLD})")
+    ledger_cmd.add_argument("--forget", metavar="БЛОК", default=None,
+                            help="забыть наблюдения по одному блоку и начать копить заново")
+    ledger_cmd.set_defaults(handler=_cmd_ledger)
 
     sens_cmd = sub.add_parser(
         "sensitivity",
@@ -320,8 +331,30 @@ def _cmd_crosscheck(args: argparse.Namespace) -> int:
     if report.verified:
         crosscheck.write_verified(client, report)
         print(f"локально можно считать: {', '.join(report.replaceable) or 'ничего'}")
+        if not args.no_ledger:
+            book = ledger.record(client, report.verified)
+            if book.dropped:
+                print(f"журнал: наблюдения версии «{book.dropped}» отброшены — "
+                      "другая арифметика")
+            settled = book.established()
+            print(f"журнал: карт {book.charts()}, закреплено блоков "
+                  f"{len(settled)} из {len(book.blocks)} — `jyotish ledger`")
     print(path)
     return 1 if conflicts else 0
+
+
+def _cmd_ledger(args: argparse.Namespace) -> int:
+    book = ledger.Ledger.load()
+    if args.forget:
+        if args.forget not in book.blocks:
+            print(f"в журнале нет блока {args.forget}", file=sys.stderr)
+            return 1
+        del book.blocks[args.forget]
+        book.save()
+        print(f"забыт блок {args.forget}")
+    print(ledger.render(book, args.threshold))
+    print(ledger.ledger_path())
+    return 0
 
 
 def _cmd_sensitivity(args: argparse.Namespace) -> int:
