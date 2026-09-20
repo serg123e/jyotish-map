@@ -259,3 +259,44 @@ def test_a_body_only_one_side_has_is_skipped_not_counted_as_zero() -> None:
     longitudes = {"Su": 30.0, "Mo": 60.0}
     assert ayanamsa_from(longitudes, {"Su": {"sidereal": 6.4}}) == pytest.approx(23.6)
     assert ayanamsa_from(longitudes, {}) is None
+
+
+# ---- an explained disagreement stops being a question ------------------------
+
+
+def test_the_lagna_offset_equal_to_the_librarys_ayanamsa_slip_is_explained() -> None:
+    from jyotish.crosscheck import _explain_ascendant
+
+    # The library declares 23.8467° but its planets imply 23.5677°: a slip of
+    # +16.7′. Its lagna is 16.7′ *behind* the site's — the same amount.
+    report = Report(local_ayanamsa=23.8467)
+    report.findings.append(Finding("As: сидерическая долгота", WARN, "Aries 28.162°",
+                                   "Aries 27.896°", "-15.95′"))
+    site = {"As": {"sidereal": 28.162}}
+    local = {"As": {"sidereal": 27.896}, "Su": {"sidereal": 336.167}}
+    # tropical Sun such that the implied ayanamsa is 23.5677°
+    _explain_ascendant(report, site, local, {"Su": 336.167 + 23.5677})
+    assert report.findings[0].status == OK
+    assert "ошибке заявленной айанамши" in report.findings[0].note
+
+
+def test_a_lagna_offset_of_another_size_stays_open() -> None:
+    from jyotish.crosscheck import _explain_ascendant
+
+    report = Report(local_ayanamsa=23.8467)
+    report.findings.append(Finding("As: сидерическая долгота", WARN, "", "", "-40.0′"))
+    site = {"As": {"sidereal": 28.162}}
+    local = {"As": {"sidereal": 28.162 - 40 / 60}, "Su": {"sidereal": 336.167}}
+    _explain_ascendant(report, site, local, {"Su": 336.167 + 23.5677})
+    assert report.findings[0].status == WARN
+
+
+def test_the_node_type_is_a_setting_once_recorded(tmp_path) -> None:
+    from jyotish.client import Client, ConfigError
+
+    chart = {"slug": "t", "date": "07.08.1983", "time": "23:00:00", "timezone": "+4",
+             "latitude": "55.45", "longitude": "37.37"}
+    assert Client.from_dict(chart, tmp_path).nodes == ""
+    assert Client.from_dict({**chart, "nodes": "mean"}, tmp_path).nodes == "mean"
+    with pytest.raises(ConfigError, match="nodes"):
+        Client.from_dict({**chart, "nodes": "sometimes"}, tmp_path)

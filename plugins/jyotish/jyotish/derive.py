@@ -392,6 +392,8 @@ def derive_all(
     show_bala_d1: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Everything in this module, in the shape the raw export writes out."""
+    from . import yogas  # here, not at the top: yogas imports this module
+
     house_signs, planet_signs = chart_positions(show_chart_d1)
     padas = arudha_padas(house_signs, planet_signs)
     karakas = chara_karakas(show_info_d1)
@@ -427,6 +429,10 @@ def derive_all(
                 "exchange": item.exchange,
             }
             for item in dispositors(planet_signs)
+        ],
+        "yogas": [
+            {"name": v.name, "planet": v.planet, "holds": v.holds, "facts": list(v.facts)}
+            for v in yogas.check_all(show_info_d1)
         ],
         "karakas": {
             "computed": karakas.computed,

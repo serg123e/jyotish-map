@@ -180,6 +180,10 @@ class Client:
     birth_time: BirthTime
     collect: CollectSettings
     root: Path
+    #: Which node the site computes, ``mean`` or ``true`` — the site does not
+    #: say, the cross-check can tell, and once known it is recorded here so
+    #: the difference from the other type stops being reported as a question.
+    nodes: str = ""
 
     # ---- paths -----------------------------------------------------------
 
@@ -279,6 +283,10 @@ class Client:
             timeout=int(collect_raw.get("timeout", defaults.timeout)),
         )
 
+        nodes = str(data.get("nodes", "") or "")
+        if nodes not in ("", "mean", "true"):
+            raise ConfigError(f"nodes: ожидалось mean или true, получено {nodes!r}")
+
         return cls(
             slug=str(data.get("slug") or root.name),
             chart=chart,
@@ -286,6 +294,7 @@ class Client:
             birth_time=birth_time,
             collect=collect,
             root=root,
+            nodes=nodes,
         )
 
 
@@ -341,6 +350,10 @@ longitude: "37.37"
 birth_time:
   status: unverified
   note: ""
+
+# Какой узел считает сайт: mean или true. Сайт этого не показывает; сверка
+# (jyotish crosscheck) покажет, какой из двух совпадает. Пусто — не установлено.
+nodes: ""
 
 collect:
   lang: en              # en — vedic-horo.com, стабильнее; .ru роняет сессию

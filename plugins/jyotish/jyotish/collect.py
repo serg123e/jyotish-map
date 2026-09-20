@@ -48,6 +48,10 @@ PAID = "ТРЕБУЕТ ПЛАТНОГО ДОСТУПА"
 AUTH = "ТРЕБУЕТ АВТОРИЗАЦИИ"
 NOT_SUPPLIED = "НЕ ПРИСЛАНО ПОЛЬЗОВАТЕЛЕМ"
 
+#: Below this, a saved response is an empty shell rather than a page: the
+#: only such answer seen so far was 98 bytes of a label with nothing after it.
+EMPTY_ANSWER_BYTES = 400
+
 #: Site action -> the name ``vedic_parser.api`` uses (or would use) for it.
 #: Actions absent from the installed parser are handled, not assumed away.
 API_NAMES = {
@@ -268,17 +272,20 @@ def collect(
                 opened, last_call = _ensure_session(client, opened, last_call)
                 html_path = _probe_html(client, opened, request, log=log)
                 last_call = time.monotonic()
+            parser = API_NAMES.get(request.action, request.action)
+            if html_path is not None and html_path.stat().st_size < EMPTY_ANSWER_BYTES:
+                # A hundred bytes of markup is the site saying «nothing here»,
+                # not a page waiting for a parser. Say which, or the gap reads
+                # as our omission when it is the site's.
+                reason = (f"сайт вернул пустой ответ ({html_path.stat().st_size} байт) — "
+                          f"разбирать нечего; парсера `{parser}` тоже нет")
+            else:
+                reason = (f"парсер `{parser}` ещё не реализован в vedic-parser"
+                          + (f"; сырой HTML сохранён в {html_path.relative_to(client.root)}"
+                             if html_path else ""))
             result.gaps.append(Gap(
-                key=request.key,
-                marker=UNAVAILABLE,
-                reason=(
-                    f"парсер `{API_NAMES.get(request.action, request.action)}` "
-                    f"ещё не реализован в vedic-parser"
-                    + (f"; сырой HTML сохранён в {html_path.relative_to(client.root)}"
-                       if html_path else "")
-                ),
-                section=section,
-                html_saved=html_path,
+                key=request.key, marker=UNAVAILABLE, reason=reason,
+                section=section, html_saved=html_path,
             ))
             continue
 

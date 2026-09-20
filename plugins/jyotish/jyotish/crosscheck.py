@@ -39,6 +39,8 @@ BODY_CODES = {
     "North Node": "Ra", "South Node": "Ke",
 }
 
+NODE_NAMES = {"mean": "средний", "true": "истинный"}
+
 #: The seven bodies whose positions both sources compute the same way. The nodes
 #: are excluded: mean and true node are different points, not a disagreement.
 CLASSICAL = ("Su", "Mo", "Ma", "Me", "Ju", "Ve", "Sa")
@@ -372,18 +374,30 @@ def compare(client: Client, collection: dict[str, Any]) -> Report:
                  "переносить в отчёт как параметр расчёта",
         ))
 
+    _explain_ascendant(report, site, local, true_longitudes)
+
     for code in ("Ra", "Ke"):
         here, there = site.get(code), local.get(code)
         if not here or not there:
             continue
         delta = _arcmin(there["sidereal"], here["sidereal"])
+        if abs(delta) < TOLERANCE_OK:
+            status, note = OK, "совпало"
+        elif client.nodes:
+            # Two node types are two points; once chart.yaml says which one
+            # the site uses, the difference is a setting, not a question.
+            status = OK
+            note = (f"{delta:+.1f}′ — сайт считает {NODE_NAMES[client.nodes]} узел "
+                    "(зафиксировано в chart.yaml: nodes), библиотека — другой тип. "
+                    "Разные точки, не ошибка.")
+        else:
+            status = WARN
+            note = (f"{delta:+.1f}′ — средний против истинного узла, это разные точки, "
+                    "а не ошибка. Определите, какой считает сайт, и запишите в "
+                    "chart.yaml: `nodes: mean` или `nodes: true`.")
         report.findings.append(Finding(
-            subject=f"{code}: тип узла",
-            status=OK if abs(delta) < TOLERANCE_OK else WARN,
-            site=_place(here), local=_place(there),
-            note=f"{delta:+.1f}′ — средний против истинного узла, это разные точки, "
-                 "а не ошибка. Выберите один и зафиксируйте."
-                 if abs(delta) >= TOLERANCE_OK else "совпало",
+            subject=f"{code}: тип узла", status=status,
+            site=_place(here), local=_place(there), note=note,
         ))
 
     for code in ("As",) + CLASSICAL:
@@ -429,6 +443,32 @@ def compare(client: Client, collection: dict[str, Any]) -> Report:
                  "у PyJHora на этом расчёте открытый TODO",
         ))
     return report
+
+
+def _explain_ascendant(report: Report, site: dict[str, Any], local: dict[str, Any],
+                       true_longitudes: dict[str, float]) -> None:
+    """Attribute a lagna disagreement to the library's ayanamsa slip when it fits.
+
+    jyotishganit declares an ayanamsa that does not reproduce its own planets
+    (a J2000-versus-date slip of the kind our own check once made), and its
+    ascendant is offset from the site's by that same amount: the tropical
+    lagna is reduced by the declared value, the planets by the actual one.
+    When the two numbers agree to within the noise, the finding says so —
+    otherwise every reading re-opens the same question.
+    """
+    finding = next((f for f in report.findings if f.subject == "As: сидерическая долгота"), None)
+    if finding is None or finding.status == OK:
+        return
+    declared, actual = report.local_ayanamsa, ayanamsa_from(true_longitudes, local)
+    if declared is None or actual is None:
+        return
+    slip = (declared - actual) * 60
+    delta = _arcmin(local["As"]["sidereal"], site["As"]["sidereal"])
+    if abs(delta + slip) < TOLERANCE_OK:
+        finding.status = OK
+        finding.note += (f" — объяснено: равно ошибке заявленной айанамши jyotishganit "
+                         f"({slip:+.1f}′); библиотека вычитает из тропической Лагны "
+                         "заявленное значение, а из планет — фактическое. Лагна сайта верна.")
 
 
 def render(report: Report) -> str:

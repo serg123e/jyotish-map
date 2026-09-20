@@ -153,7 +153,7 @@ def _raw_data(client: Client, data: Collection, derived: dict[str, Any]) -> list
     out += _section_8_bala(data)
     out += _section_9_bhava(data, derived)
     out += _section_10_ashtakavarga(data)
-    out += _section_11_yogas(data)
+    out += _section_11_yogas(data, derived)
     out += _section_12_avasthas(data)
     out += _section_13_states(data, derived)
     out += _section_14_dashas(data)
@@ -615,7 +615,7 @@ def _section_10_ashtakavarga(data: Collection) -> list[str]:
     return out
 
 
-def _section_11_yogas(data: Collection) -> list[str]:
+def _section_11_yogas(data: Collection, derived: dict[str, Any] | None = None) -> list[str]:
     out = ["## 11. Йоги", ""]
     found = False
     for varga in ("D1", "D9", "D10", "D60"):
@@ -636,8 +636,43 @@ def _section_11_yogas(data: Collection) -> list[str]:
         )
         out.append("")
     if not found:
-        return out + _absent("йоги")
-    out += [f"> {YOGA_WARNING}", ""]
+        out += _absent("йоги")
+    else:
+        out += [f"> {YOGA_WARNING}", ""]
+    out += _yogas_by_condition(derived)
+    return out
+
+
+def _yogas_by_condition(derived: dict[str, Any]) -> list[str]:
+    """The rules with one right answer from the positions, checked here.
+
+    Set apart from the site's list on purpose: this table *is* the check of
+    the condition that Prompt 10 §3 asks for, for the few yogas where the
+    condition is arithmetic. Kala Sarpa is the one that mattered on the
+    first reading — declared by the site by sign, false by degree.
+    """
+    rows = (derived or {}).get("yogas") or []
+    if not rows:
+        return []
+    out = ["### Проверено по условию **[расчёт]**", ""]
+    out += _table(
+        ["Правило", "Вывод", "На чём держится"],
+        [
+            (f"{r['name']} — {r['planet']}" if r.get("planet") else r["name"],
+             "не применимо" if r["holds"] is None
+             else ("**выполнено**" if r["holds"] else "не выполнено"),
+             "; ".join(r.get("facts") or []))
+            for r in rows
+        ],
+    )
+    out += [
+        "",
+        "Проверено по долготам и управлению, без аспектов и сил: Кала-сарпа по "
+        "градусам, сожжение по орбисам, Кендрадхипати по управлению кендрами, "
+        "Нича-бханга по трём позиционным условиям. Остальные йоги списка выше "
+        "проверяются на этапе 02 вручную.",
+        "",
+    ]
     return out
 
 
@@ -1049,8 +1084,8 @@ def _missing_data(client: Client, data: Collection) -> list[str]:
              "шодханы, пинды, какшья, прастара — считаются из БАВ, пока не реализовано"),
             ("Калачакра-даша", "§14", "система на сайте отсутствует"),
             ("Абхукта-мула", "§4", "источника нет"),
-            ("Кендрадхипати-доша, Нича-бханга, сожжение", "§13",
-             "сайт отдельно не помечает; выводятся правилами, пока не реализованы"),
+            ("Кендрадхипати-доша, Нича-бханга, сожжение, Кала-сарпа по градусам", "§11",
+             "сайт отдельно не помечает — **[расчёт]** по условию, см. раздел 11"),
             ("Арудхи A1–A12, UL", "§6",
              "сайт не отдаёт — считаются здесь, см. следующую таблицу"),
         ],

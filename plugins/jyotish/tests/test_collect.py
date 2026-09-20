@@ -209,3 +209,20 @@ def test_a_dasha_level_of_one_is_not_planned_twice(client: Client) -> None:
     shallow = replace(client, collect=replace(client.collect, dasha_level=1))
     keys = [request.key for request in build_plan(shallow)]
     assert len(keys) == len(set(keys)), sorted(k for k in keys if keys.count(k) > 1)
+
+
+def test_an_empty_answer_is_named_as_the_sites_not_ours(client: Client, monkeypatch) -> None:
+    """98 bytes of markup is «nothing here», not a page waiting for a parser."""
+    _stub_api(monkeypatch)
+    monkeypatch.setattr(collect_module, "_ensure_session", lambda c, s, t: (object(), 0.0))
+
+    def probe(client, session, request, *, log):
+        path = client.raw_dir / "html" / f"{request.key}.html"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("<b>VD: </b>", encoding="utf-8")
+        return path
+
+    monkeypatch.setattr(collect_module, "_probe_html", probe)
+    result = collect(client, plan=[Request("show-current-periods", optional=True)], probe=True)
+    assert "сайт вернул пустой ответ" in result.gaps[0].reason
+    assert "не реализован" not in result.gaps[0].reason
