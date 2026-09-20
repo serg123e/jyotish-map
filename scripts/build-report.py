@@ -398,7 +398,12 @@ def chapter_titles(root: Path) -> dict[int, str]:
 
 
 def repaginate(root: Path, pages: dict[int, int]) -> int:
-    """Rewrite the contents table with the real page numbers. Returns how many changed.
+    """Write the contents table from the chapters and their real page numbers.
+
+    Returns how many rows changed. Whatever sits under «## Оглавление» is
+    replaced: stage 09 writes the heading alone, because hand-written page
+    numbers in a generated document are wrong by construction. Without the
+    heading the section is inserted before the first numbered chapter.
 
     Scoped to the contents chapter and nothing else. A row like
     ``| 1 | Обратиться к врачу поздно | 90 |`` in the risk table has exactly
@@ -407,24 +412,26 @@ def repaginate(root: Path, pages: dict[int, int]) -> int:
     """
     path = root / "report.md"
     text = path.read_text(encoding="utf-8")
-    head, marker, rest = text.partition("## Оглавление")
-    if not marker:
+    titles = chapter_titles(root)
+    if not titles:
         return 0
-    toc, _, tail = rest.partition("\n## ")
-    changed = 0
+    rows = ["| | Раздел | Стр. |", "|---|---|---|"]
+    rows += [f"| {number} | {title} | {pages.get(number, '—')} |"
+             for number, title in sorted(titles.items())]
+    table = "\n".join(rows)
 
-    def fix(match: re.Match[str]) -> str:
-        nonlocal changed
-        number, title, old = int(match.group(1)), match.group(2), match.group(3).strip()
-        page = pages.get(number)
-        if page is None or str(page) == old:
-            return match.group(0)
-        changed += 1
-        return f"| {number} | {title}| {page} |"
-
-    toc = re.sub(r"^\| (\d{1,2}) \| ([^|]+)\|\s*(\d+)\s*\|$", fix, toc, flags=re.M)
+    head, marker, rest = text.partition("## Оглавление")
+    if marker:
+        old_toc, sep, tail = rest.partition("\n## ")
+        new_text = head + marker + "\n\n" + table + "\n\n" + ("## " + tail if sep else "")
+    else:
+        old_toc = ""
+        first = re.search(r"^##\s+\d{1,2}\.\s", text, re.M)
+        cut = first.start() if first else len(text)
+        new_text = text[:cut] + "## Оглавление\n\n" + table + "\n\n" + text[cut:]
+    changed = sum(1 for row in rows[2:] if row not in old_toc)
     if changed:
-        path.write_text(head + marker + toc + "\n## " + tail, encoding="utf-8")
+        path.write_text(new_text, encoding="utf-8")
     return changed
 
 
