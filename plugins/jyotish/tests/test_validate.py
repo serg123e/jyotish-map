@@ -57,9 +57,17 @@ REPORT = """
 Основной камень подбирается после неё.
 """ + SOUL_CHAPTER
 
+#: A rectified time is a claim and carries its evidence; the tests state it
+#: the way a real chart.yaml must.
+RECTIFICATION = {"by": "астролог Н.", "events": ["06.2013 — переезд", "09.2016 — рождение сына"]}
+
+
+def _birth(status: str) -> dict:
+    return {"status": status, **(RECTIFICATION if status == "rectified" else {})}
+
 
 def _client(tmp_path: Path, status: str = "documented", biography: bool = False) -> Client:
-    client = Client.from_dict({**CHART, "birth_time": {"status": status}}, tmp_path)
+    client = Client.from_dict({**CHART, "birth_time": _birth(status)}, tmp_path)
     client.ensure_dirs()
     if biography:
         client.biography_md.write_text("работает врачом", encoding="utf-8")
@@ -470,8 +478,8 @@ def test_a_long_birth_time_note_does_not_swallow_the_table(tmp_path: Path) -> No
     """chart.yaml notes are YAML blocks; a checklist cell is one line."""
     from jyotish.client import BirthTime
 
-    birth = BirthTime(status="rectified", note=(
-        "Ректифицировано астрологом отдельно. " + "Подробность. " * 40))
+    birth = BirthTime(status="rectified", by="астролог Н.", events=("06.2013 — переезд",),
+                      note=("Ректифицировано астрологом отдельно. " + "Подробность. " * 40))
     assert len(birth.short) < 200
     assert len(birth.label) > 400
     assert birth.short.startswith("ректифицировано — Ректифицировано астрологом")

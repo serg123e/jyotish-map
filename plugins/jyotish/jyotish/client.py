@@ -67,10 +67,22 @@ class BirthTime:
 
     This single field decides whether Prompt 07 runs at all and whether D60
     conclusions are allowed, so it is recorded explicitly rather than assumed.
+
+    ``rectified`` is the one status that is a claim rather than a document,
+    so it carries its evidence: who rectified (``by``) and on which events
+    (``events``). Prompt 01 has always asked for both; the first full reading
+    showed why they must be fields and not a courtesy — the gate to Prompt 07
+    was opened on the single word «ректифицировано», with the events never
+    named and the person himself saying the time was a family recollection.
+    Without the evidence the word does not count.
     """
 
     status: str = "unverified"
     note: str = ""
+    #: Who performed the rectification. Meaningful for ``rectified`` only.
+    by: str = ""
+    #: The dated events the rectification rests on, one string each.
+    events: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.status not in BIRTH_TIME_STATUSES:
@@ -80,13 +92,41 @@ class BirthTime:
             )
 
     @property
+    def evidence_missing(self) -> tuple[str, ...]:
+        """Which parts of a rectification claim are absent.
+
+        Empty for every status but ``rectified``: a document is its own
+        evidence, and the unconfirmed statuses claim nothing.
+        """
+        if self.status != "rectified":
+            return ()
+        missing = []
+        if not self.by.strip():
+            missing.append("кем (birth_time.by)")
+        if not [event for event in self.events if event.strip()]:
+            missing.append("по каким событиям (birth_time.events)")
+        return tuple(missing)
+
+    @property
     def confirmed(self) -> bool:
-        """Whether the soul-path stage and D60 conclusions are allowed."""
-        return self.status in BIRTH_TIME_CONFIRMED
+        """Whether the soul-path stage and D60 conclusions are allowed.
+
+        A rectification without its evidence is not a rectification for the
+        gate's purposes: the status stays in the file as written, but it
+        opens nothing until ``by`` and ``events`` are filled in.
+        """
+        return self.status in BIRTH_TIME_CONFIRMED and not self.evidence_missing
 
     @property
     def label(self) -> str:
         text = BIRTH_TIME_STATUSES[self.status]
+        if self.status == "rectified":
+            if self.evidence_missing:
+                text += (" — НЕ ЗАСЧИТАНО: не указано, "
+                         + " и ".join(self.evidence_missing)
+                         + "; гейт Промпта 07 закрыт")
+            else:
+                text += f" ({self.by}; по событиям: {'; '.join(self.events)})"
         return f"{text} — {self.note}" if self.note else text
 
     @property
@@ -99,6 +139,10 @@ class BirthTime:
         table put together. The full text lives in chart.yaml.
         """
         text = BIRTH_TIME_STATUSES[self.status]
+        if self.evidence_missing:
+            # The gate is shut for a reason the reader must not miss, and
+            # the note is the wrong place to look for it.
+            return f"{text} — НЕ ЗАСЧИТАНО, не указано {' и '.join(self.evidence_missing)}"
         first = " ".join(self.note.split()).split(". ")[0].rstrip(".")
         if not first:
             return text
@@ -216,6 +260,8 @@ class Client:
         birth_time = BirthTime(
             status=str(birth_raw.get("status", "unverified")),
             note=str(birth_raw.get("note", "") or ""),
+            by=str(birth_raw.get("by", "") or ""),
+            events=_events(birth_raw.get("events")),
         )
 
         collect_raw = data.get("collect") or {}
@@ -243,6 +289,33 @@ class Client:
         )
 
 
+def _events(raw: Any) -> tuple[str, ...]:
+    """``birth_time.events`` as written by a person: strings, or date/what pairs.
+
+    Both spellings are accepted because both are natural in YAML::
+
+        events:
+          - "06.2013 — переезд в Москву"
+          - {date: "09.2016", what: "рождение сына"}
+    """
+    if raw in (None, ""):
+        return ()
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        raise ConfigError("birth_time.events должен быть списком событий")
+    events = []
+    for item in raw:
+        if isinstance(item, dict):
+            date, what = str(item.get("date", "") or ""), str(item.get("what", "") or "")
+            if not (date and what):
+                raise ConfigError("у события в birth_time.events нужны date и what")
+            events.append(f"{date} — {what}")
+        else:
+            events.append(str(item))
+    return tuple(events)
+
+
 TEMPLATE = """\
 # Описание карты. Заполняется человеком, всё остальное генерируется.
 slug: {slug}
@@ -260,6 +333,11 @@ longitude: "37.37"
 
 # От этого зависит допуск к Промпту 07 и выводам по D60.
 # documented | rectified | relatives | unverified
+# Для rectified обязательны by и events — без них статус не засчитывается:
+#   by: "имя или описание астролога"
+#   events:
+#     - "06.2013 — переезд в Москву"
+#     - "09.2016 — рождение сына"
 birth_time:
   status: unverified
   note: ""

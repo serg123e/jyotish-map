@@ -30,9 +30,17 @@ EXPLANATION = "Наработанного заметно больше, чем н
 RAISED = "Экзальтация Сатурна, Луна в своём знаке, поддержка 9-го дома в трёх варгах подряд."
 LOWERED = "Дебилитированный Марс, напряжённый 8-й дом, расхождение D9 и D60 по Атмакараке."
 
+#: A rectified time is a claim and carries its evidence; the tests state it
+#: the way a real chart.yaml must.
+RECTIFICATION = {"by": "астролог Н.", "events": ["06.2013 — переезд", "09.2016 — рождение сына"]}
+
+
+def _birth(status: str) -> dict:
+    return {"status": status, **(RECTIFICATION if status == "rectified" else {})}
+
 
 def _client(tmp_path: Path, status: str = "documented") -> Client:
-    return Client.from_dict({**CHART, "birth_time": {"status": status}}, tmp_path)
+    return Client.from_dict({**CHART, "birth_time": _birth(status)}, tmp_path)
 
 
 def _scores(layers=ALL_LAYERS, **overrides) -> list[LayerScore]:
