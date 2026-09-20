@@ -2,7 +2,8 @@
 
     jyotish new ivan                 # create clients/ivan/chart.yaml to fill in
     jyotish collect clients/ivan     # stage 01: fetch, derive, write both files
-    jyotish status clients/ivan      # what is collected, what is missing
+    jyotish status clients/ivan      # what is collected, which stages are done, what is next
+    jyotish next clients/ivan        # the next stage, or why a person is needed (exit 0 / 3 / 4)
     jyotish soul-path clients/ivan   # stage 07: weights x scores, refuses if the gate is shut
     jyotish crosscheck clients/ivan  # recompute locally and report every disagreement
     jyotish sensitivity clients/ivan # re-collect at ±N minutes: which vargas survive
@@ -19,7 +20,7 @@ from typing import Sequence
 
 from vedic_parser.session import VedicHoroError
 
-from . import crosscheck, patterns, render_raw, sensitivity, soul_path, validate
+from . import crosscheck, patterns, progress, render_raw, sensitivity, soul_path, validate
 from .client import Client, ConfigError, scaffold
 from .collect import RateLimited, build_plan, collect, from_cache
 from .derive import derive_all
@@ -49,9 +50,14 @@ def build_parser() -> argparse.ArgumentParser:
                              help="показать план запросов и выйти, ничего не запрашивая")
     collect_cmd.set_defaults(handler=_cmd_collect)
 
-    status_cmd = sub.add_parser("status", help="что уже собрано и чего не хватает")
+    status_cmd = sub.add_parser("status", help="что уже сделано, какие этапы пройдены, что дальше")
     status_cmd.add_argument("client")
     status_cmd.set_defaults(handler=_cmd_status)
+
+    next_cmd = sub.add_parser(
+        "next", help="следующий этап и что его блокирует: 0 — можно, 3 — нужен человек, 4 — разбор завершён")
+    next_cmd.add_argument("client")
+    next_cmd.set_defaults(handler=_cmd_next)
 
     soul_cmd = sub.add_parser(
         "soul-path",
@@ -144,13 +150,51 @@ def _cmd_status(args: argparse.Namespace) -> int:
     todo = [r for r in plan if r.key not in cached]
 
     print(f"{client.slug}: собрано {len(done)} из {len(plan)}")
-    print(f"время рождения: {client.birth_time.label}")
+    print(f"время рождения: {client.birth_time.short}")
     print(f"биография: {'есть' if client.biography_md.exists() else 'НЕ ПРИСЛАНА'}")
     print(f"этап 07 (путь души): {'допустим' if client.birth_time.confirmed else 'закрыт гейтом'}")
     if todo:
         print(f"\nне собрано ({len(todo)}):")
         for request in todo:
             print(f"  {request.key}")
+
+    states = progress.progress(client)
+    print(f"\nэтапы: {progress.render_line(states)}")
+    for state in states:
+        if state.status == progress.PARTIAL:
+            print(f"  {state.number}: не хватает {', '.join(state.missing)}")
+        for note in state.notes:
+            print(f"  {state.number}: {note}")
+    following = progress.next_stage(client, states)
+    if following.finished:
+        print("дальше: разбор завершён")
+    else:
+        print(f"дальше: этап {following.stage} — {progress.TITLES[following.stage]}")
+        for blocker in following.blockers:
+            print(f"  СТОП: {blocker}")
+    return 0
+
+
+def _cmd_next(args: argparse.Namespace) -> int:
+    """One line for a loop to read: the stage to run, or why to stop.
+
+    Exit codes are the contract: 0 — run the named stage, 3 — a person is
+    needed first, 4 — nothing left. A run without confirmations between
+    stages asks this instead of asking the person.
+    """
+    client = Client.load(args.client)
+    following = progress.next_stage(client)
+    for note in following.notes:
+        print(f"  {note}")
+    if following.finished:
+        print("разбор завершён")
+        return 4
+    if following.blockers:
+        print(f"этап {following.stage} заблокирован:")
+        for blocker in following.blockers:
+            print(f"  {blocker}")
+        return 3
+    print(f"{following.stage} {progress.TITLES[following.stage]}")
     return 0
 
 

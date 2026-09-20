@@ -43,7 +43,8 @@ ARCHITECTURE.md                    что автоматизируется, чт
 ```
 
 Появятся команды `/jyotish:new`, `/jyotish:collect`, `/jyotish:stage`,
-`/jyotish:soul-path`, `/jyotish:check`, `/jyotish:status` и скилл, который
+`/jyotish:soul-path`, `/jyotish:sensitivity`, `/jyotish:check`,
+`/jyotish:status`, `/jyotish:run` и скилл, который
 ведёт разбор по этапам и не даёт проскочить гейты.
 
 Больше ничего ставить не нужно: каталог `bin/` плагина Claude Code сам добавляет
@@ -125,7 +126,7 @@ pip install -e plugins/jyotish     # или просто plugins/jyotish/bin/jyo
 jyotish new ivan                  # создаст clients/ivan/chart.yaml
 $EDITOR clients/ivan/chart.yaml   # дата, время, координаты, статус времени рождения
 jyotish collect clients/ivan      # ~97 запросов к сайту, с кэшем
-jyotish status clients/ivan       # что собрано, что осталось
+jyotish status clients/ivan       # что собрано, какие этапы пройдены, что дальше
 ```
 
 Координаты — **градусы и минуты**, не десятичные: `55.45` значит 55°45′,
