@@ -65,22 +65,30 @@ def ledger_path() -> Path:
     return Path(base) / "jyotish" / "ledger.json"
 
 
-def fingerprint() -> str:
-    """The arithmetic and the checks these observations were made by.
-
-    Both halves matter. A changed convention means the numbers came out
-    differently; a changed check means «сошлось» meant something else. In
-    either case the old observations are not evidence about the current one.
-    """
-    from . import crosscheck, local as local_module
-
+def _version(package: str) -> str:
     try:
         from importlib.metadata import version
 
-        installed = version("PyJHora")
+        return version(package)
     except Exception:
-        installed = "?"
-    return (f"PyJHora {installed} · соглашения {local_module.CONVENTIONS_VERSION}"
+        return "?"
+
+
+def fingerprint() -> str:
+    """The arithmetic, the reading and the checks these observations were made by.
+
+    All three matter. A changed convention means the local numbers came out
+    differently; a changed **parser** means the site's numbers were read
+    differently — vedic-parser 0.1.0 quietly shifted the columns of a
+    fourteen-column planets table, so «сошлось» under it was a statement
+    about other data; a changed check means «сошлось» meant something else
+    again. In every case the old observations are not evidence about the
+    current arrangement.
+    """
+    from . import crosscheck, local as local_module
+
+    return (f"PyJHora {_version('PyJHora')} · соглашения {local_module.CONVENTIONS_VERSION}"
+            f" · vedic-parser {_version('vedic-parser')}"
             f" · проверки {crosscheck.CHECKS_VERSION}")
 
 

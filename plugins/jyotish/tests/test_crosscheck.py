@@ -421,6 +421,28 @@ def test_an_anchor_further_than_the_sites_rounding_is_a_conflict() -> None:
     assert "точка отсчёта смещена" in report.findings[0].note
 
 
+def test_verdicts_from_another_arithmetic_are_not_read(tmp_path, monkeypatch) -> None:
+    """They once let twenty-two blocks go local right after the parser changed."""
+    import json
+
+    from jyotish import ledger
+    from jyotish.client import Client
+    from jyotish.crosscheck import read_verified, verified_path, write_verified
+
+    client = Client.from_dict({"slug": "t", "date": "20.03.1980", "time": "07:45:00",
+                               "timezone": "+3", "latitude": "54.25", "longitude": "42.50"},
+                              tmp_path)
+    report = Report(verified={"show-chart-D9": OK})
+    monkeypatch.setattr(ledger, "fingerprint", lambda: "старая арифметика")
+    write_verified(client, report)
+    assert read_verified(client) == {"show-chart-D9": OK}
+
+    monkeypatch.setattr(ledger, "fingerprint", lambda: "новая арифметика")
+    assert read_verified(client) == {}
+    # …а файл остаётся на месте: это запись о том, что было, а не мусор.
+    assert json.loads(verified_path(client).read_text(encoding="utf-8"))["local"]
+
+
 def test_read_verified_is_empty_without_a_check(tmp_path) -> None:
     from jyotish.client import Client
     from jyotish.crosscheck import read_verified

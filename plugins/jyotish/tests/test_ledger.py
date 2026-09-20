@@ -102,6 +102,14 @@ def test_changed_conventions_void_the_observations(tmp_path: Path, path: Path, m
     assert "отброшены" in render(book)
 
 
+def test_the_fingerprint_names_all_three_sources_of_change(monkeypatch) -> None:
+    """Including the parser: it reads the site, and it has shifted columns before."""
+    monkeypatch.undo()                      # нужен настоящий отпечаток, не подменённый
+    text = ledger_module.fingerprint()
+    for part in ("PyJHora", "соглашения", "vedic-parser", "проверки"):
+        assert part in text, text
+
+
 def test_a_damaged_file_starts_over_instead_of_raising(path: Path) -> None:
     path.write_text("{не json", encoding="utf-8")
     book = Ledger.load(path)

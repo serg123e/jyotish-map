@@ -713,10 +713,13 @@ def verified_path(client: Client) -> Path:
 
 def write_verified(client: Client, report: Report) -> Path:
     """Record, per block, whether the local computation may stand in for the site."""
+    from .ledger import fingerprint
+
     client.ensure_dirs()
     path = verified_path(client)
     path.write_text(json.dumps({
         "checked": datetime.now().isoformat(timespec="minutes"),
+        "fingerprint": fingerprint(),
         "sources": report.sources,
         "local": report.verified,
         "replaceable": report.replaceable,
@@ -725,11 +728,23 @@ def write_verified(client: Client, report: Report) -> Path:
 
 
 def read_verified(client: Client) -> dict[str, str]:
+    """This chart's verdicts, but only if they were reached the way we compute now.
+
+    Stamped and checked for the same reason the ledger is: a verdict is a
+    statement about one arithmetic, one reading of the site and one set of
+    checks. A stale file once authorised twenty-two blocks to be computed
+    locally right after the parser that reads the site had changed.
+    """
+    from .ledger import fingerprint
+
     path = verified_path(client)
     if not path.exists():
         return {}
     try:
-        return dict(json.loads(path.read_text(encoding="utf-8")).get("local") or {})
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if str(data.get("fingerprint") or "") != fingerprint():
+            return {}
+        return dict(data.get("local") or {})
     except (json.JSONDecodeError, AttributeError):
         return {}
 
