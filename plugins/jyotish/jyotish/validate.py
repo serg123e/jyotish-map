@@ -20,6 +20,7 @@ from typing import Any, Iterable, Sequence
 from . import patterns as patterns_module
 from .client import Client
 from .soul_path import DISCLAIMER
+from .text import counted
 
 AUTO = "авто"
 JUDGE = "судья"
@@ -167,7 +168,8 @@ def _pattern_checks(
         BY_NUMBER[1],
         FAIL if thin else PASS,
         "; ".join(f.message for f in thin) if thin
-        else f"все {len(chart_patterns)} паттернов опираются на ≥3 разных слоя",
+        else "все " + counted(len(chart_patterns), "паттерн", "паттерна", "паттернов")
+        + " опираются на ≥3 разных слоя",
     )]
 
     without = [p.name for p in chart_patterns if not p.contradictions]

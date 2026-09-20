@@ -209,7 +209,11 @@ class KarakaCheck:
     computed: dict[str, str] = field(default_factory=dict)   # code -> planet
     reported: dict[str, str] = field(default_factory=dict)   # code -> planet
     degrees: dict[str, float] = field(default_factory=dict)  # planet -> degrees in sign
-    mismatches: list[str] = field(default_factory=list)
+    #: ``(title, computed planet, planet the site shows)``. Structured rather
+    #: than a sentence: the export used to recover these three values by
+    #: splitting the Russian message back apart, so rewording it here produced
+    #: garbage in the РАСХОЖДЕНИЕ block and nothing failed.
+    disagreements: list[tuple[str, str, str]] = field(default_factory=list)
     #: Planets whose degrees are close enough that rounding could reorder them.
     near_ties: list[str] = field(default_factory=list)
 
@@ -219,7 +223,15 @@ class KarakaCheck:
 
     @property
     def agrees(self) -> bool:
-        return not self.mismatches
+        return not self.disagreements
+
+    @property
+    def mismatches(self) -> list[str]:
+        """The disagreements as sentences, for anything that only prints them."""
+        return [
+            f"{title}: расчёт по градусам даёт {computed}, сайт показывает {reported}"
+            for title, computed, reported in self.disagreements
+        ]
 
 
 def chara_karakas(show_info: dict[str, Any], *, tie_threshold: float = 0.05) -> KarakaCheck:
@@ -259,9 +271,7 @@ def chara_karakas(show_info: dict[str, Any], *, tie_threshold: float = 0.05) -> 
     for title, planet in check.computed.items():
         reported = check.reported.get(title)
         if reported and reported != planet:
-            check.mismatches.append(
-                f"{title}: расчёт по градусам даёт {planet}, сайт показывает {reported}"
-            )
+            check.disagreements.append((title, planet, reported))
     return check
 
 
@@ -422,6 +432,7 @@ def derive_all(
             "computed": karakas.computed,
             "reported": karakas.reported,
             "degrees": karakas.degrees,
+            "disagreements": [list(item) for item in karakas.disagreements],
             "mismatches": karakas.mismatches,
             "near_ties": karakas.near_ties,
         },

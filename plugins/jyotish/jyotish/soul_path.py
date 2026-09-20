@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping
 
 from .client import Client
+from .text import number
 
 #: Prompt 07's table: layer key, weight in percent, and what it judges.
 LAYERS: tuple[tuple[str, str, int, str], ...] = (
@@ -306,7 +307,7 @@ def render(result: SoulPath) -> str:
     lines = [
         "## Пройденность пути души",
         "",
-        f"**{result.total:.0f}%**",
+        f"**{number(result.total)}%**",
         "",
         f"> {DISCLAIMER}",
         "",
@@ -318,11 +319,11 @@ def render(result: SoulPath) -> str:
     for item in result.contributions:
         lines.append(
             f"| {item.title} | {LAYER_SUBJECTS[item.key]} | {item.weight:g}% | "
-            f"{item.score} | {item.value:.1f} |"
+            f"{item.score} | {number(item.value)} |"
         )
     lines.append(
         f"| **Итого** |  | {sum(i.weight for i in result.contributions):g}% |  | "
-        f"**{result.total:.1f}** |"
+        f"**{number(result.total)}** |"
     )
     lines += ["", "Вклад слоя = вес × балл ÷ 100.", ""]
 

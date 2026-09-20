@@ -18,7 +18,8 @@ from typing import Any, Iterable
 
 from .client import VARGA_PURPOSE, Client
 from .collect import NOT_SUPPLIED, PAID, UNAVAILABLE, Collection, Gap
-from .derive import derive_all, sign_name
+from .derive import KARAKA_PLANETS, derive_all, sign_name
+from .text import counted, superscript
 
 #: Prompt 01 §13's checklist of special states, mapped to where each is
 #: actually found. The site marks most of them with a code in the planet's
@@ -48,6 +49,12 @@ SPECIAL_STATE_SOURCES: tuple[tuple[str, str, str], ...] = (
     ("Абхукта-мула", "none", "источника нет"),
     ("Кендрадхипати-доша", "none", "источника нет; выводится из управления домами"),
 )
+
+#: The dignities worth calling a special state. The site puts the planet's
+#: relation to the sign lord in the same field, so «Friend» and «Neutral» come
+#: through it too — and listing those as special states fills the table whose
+#: only job is to show what is unusual.
+NOTABLE_DIGNITIES = ("Exaltation", "Debilitation", "Own sign", "Moolatrikona")
 
 #: Said next to every yoga table. Prompt 01 §11 and Prompt 10 §3–4 both exist
 #: because a previous reading mistook this list for evidence.
@@ -154,6 +161,7 @@ def _raw_data(client: Client, data: Collection, derived: dict[str, Any]) -> list
     out += _section_16_transits(data)
     out += _section_17_aspects(data)
     out += _section_18_panchanga(data)
+    out += _section_19_extra(client, data)
     out += _section_20_quality(client, data, derived)
     return out
 
@@ -194,7 +202,7 @@ def _section_1_parameters(client: Client, data: Collection) -> list[str]:
         "",
         "Настройки узлов, способа расчёта варг, системы чара-карак и арудх сайт "
         "анонимному пользователю не показывает: использованы его значения по "
-        "умолчанию. Караки ниже посчитаны в 7-караковой системе.",
+        f"умолчанию. Караки ниже посчитаны в {len(KARAKA_PLANETS)}-караковой системе.",
         "",
     ]
     return out
@@ -301,11 +309,10 @@ def _section_3_vargas(data: Collection) -> list[str]:
         "колонка «Раши» для варги остаётся натальной — это свойство сайта, не ошибка.",
         "",
     ]
-    order = [v for v in ("D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9", "D10",
-                         "D11", "D12", "D16", "D20", "D24", "D27", "D30", "D40",
-                         "D45", "D60") if v in vargas]
-    order += [v for v in vargas if v not in order]
-    for varga in order:
+    # vargas_present already sorts by division, D2 before D10. A second
+    # hardcoded order here was a copy of DEFAULT_VARGAS that would quietly
+    # dump any newly added varga at the end.
+    for varga in vargas:
         chart = data.get(f"show-chart-{varga}") or {}
         info = data.get(f"show-info-{varga}") or {}
         purpose = VARGA_PURPOSE.get(varga)
@@ -385,7 +392,9 @@ def _section_5_jaimini(data: Collection, derived: dict[str, Any]) -> list[str]:
     degrees = karakas.get("degrees") or {}
     rows = []
     for title, planet in (karakas.get("computed") or {}).items():
-        rows.append((title, planet, f"{degrees.get(planet, 0):.4f}°",
+        degree = degrees.get(planet)
+        rows.append((title, planet,
+                     f"{degree:.4f}°" if degree is not None else f"`{UNAVAILABLE}`",
                      signs.get(planet), houses.get(planet),
                      karakas.get("reported", {}).get(title) or "—"))
     out += _table(
@@ -394,8 +403,11 @@ def _section_5_jaimini(data: Collection, derived: dict[str, Any]) -> list[str]:
     )
     out += [
         "",
-        "Караки посчитаны по наибольшему градусу внутри знака, 7 планет, узлы не "
-        "участвуют. Колонка «Показывает сайт» — для сверки; расхождения вынесены "
+        "Караки посчитаны по наибольшему градусу внутри знака, "
+        + counted(len(KARAKA_PLANETS), "планета", "планеты", "планет")
+        + (", узлы не участвуют" if "Ra" not in KARAKA_PLANETS
+           else ", градус Раху отсчитывается от конца знака")
+        + ". Колонка «Показывает сайт» — для сверки; расхождения вынесены "
         "в раздел 20.",
         "",
     ]
@@ -670,7 +682,7 @@ def _section_13_states(data: Collection, derived: dict[str, Any]) -> list[str]:
         flags = []
         if planet.get("retrograde"):
             flags.append("ретро")
-        if _dignity(planet):
+        if _dignity(planet) in NOTABLE_DIGNITIES:
             flags.append(_dignity(planet))
         if war:
             flags.append(f"граха-юддха: {war}")
@@ -718,7 +730,7 @@ def _state_coverage(info: dict[str, Any]) -> list[tuple[str, str, str]]:
             holders.setdefault("war", []).append(planet.get("code", ""))
         if planet.get("retrograde"):
             holders.setdefault("retrograde", []).append(planet.get("code", ""))
-        if _dignity(planet) in ("Exaltation", "Debilitation", "Own sign", "Moolatrikona"):
+        if _dignity(planet) in NOTABLE_DIGNITIES:
             holders.setdefault("dignity", []).append(planet.get("code", ""))
 
     rows: list[tuple[str, str, str]] = []
@@ -744,19 +756,42 @@ def _state_coverage(info: dict[str, Any]) -> list[tuple[str, str, str]]:
     return rows
 
 
+def _vimshottari_completeness(level: int, count: int) -> str:
+    """Whether a Vimshottari block is the whole tree or a window around today.
+
+    Nine lords, so a complete tree of level N holds 9**N periods. Levels 3 and
+    4 are requested with exactly the same parameters as levels 1 and 2 — the
+    site alone decides how much it sends back, and in practice it returns all
+    729 of level 3 and a few hundred of level 4. So the answer is read off the
+    data. The heading used to assert «текущий отрезок» for both, which was
+    simply false for level 3.
+    """
+    full = 9 ** level
+    if count >= full:
+        return f"Полное дерево {level}-го уровня: 9{superscript(level)} = {full}."
+    return (
+        f"Сайт вернул {count} из 9{superscript(level)} = {full} — это отрезок "
+        "вокруг текущей даты, а не всё дерево."
+    )
+
+
 def _section_14_dashas(data: Collection) -> list[str]:
     out = ["## 14. Даши", ""]
     labels = {
         "show-dasha-vimshottari-1": "Вимшоттари, махадаши",
         "show-dasha-vimshottari-2": "Вимшоттари, антардаши",
-        "show-dasha-vimshottari-3-current": "Вимшоттари, пратьянтардаши (текущий отрезок)",
-        "show-dasha-vimshottari-4-current": "Вимшоттари, сукшма (текущий отрезок)",
+        "show-dasha-vimshottari-3-current": "Вимшоттари, пратьянтардаши",
+        "show-dasha-vimshottari-4-current": "Вимшоттари, сукшма",
         "show-dasha-ashtottari-2": "Аштоттари",
         "show-dasha-yogini-2": "Йогини",
         "show-dasha-chara_rao-2": "Чара (Рао)",
         "show-dasha-narayana-2": "Нараяна",
         "show-dasha-navamsa-2": "Навамша-даша",
     }
+    #: Which level of the Vimshottari tree each block holds, so its completeness
+    #: can be stated from the data rather than asserted by the label.
+    levels = {"show-dasha-vimshottari-1": 1, "show-dasha-vimshottari-2": 2,
+              "show-dasha-vimshottari-3-current": 3, "show-dasha-vimshottari-4-current": 4}
     any_found = False
     for key, title in labels.items():
         block = data.get(key)
@@ -764,7 +799,10 @@ def _section_14_dashas(data: Collection) -> list[str]:
             continue
         any_found = True
         periods = block.get("periods") or []
-        out += [f"### {title} — {len(periods)} периодов", ""]
+        out += [f"### {title} — "
+                + counted(len(periods), "период", "периода", "периодов"), ""]
+        if key in levels:
+            out += [_vimshottari_completeness(levels[key], len(periods)), ""]
         out += _table(
             ["Период", "Начало", "Конец", "Возраст"],
             [
@@ -871,6 +909,52 @@ def _section_18_panchanga(data: Collection) -> list[str]:
     return out
 
 
+#: Parts of a response the sections above deliberately leave folded, with the
+#: reason. Prompt 01 §19 is "everything not in the list above", and the honest
+#: answer to it is a pointer to the cache plus this list — not silence. The
+#: export used to jump from 18 to 20, which reads as an oversight.
+FOLDED = (
+    ("`show-avasthas-*.json`", "группы букв для силы по шаянади: зависят от "
+     "первого слога имени, в таблицу раздела 12 не разворачиваются"),
+    ("`show-bala-*.json`", "варга-бала и шад-бала по варгам выведены как JSON "
+     "целиком — таблицей они шире страницы"),
+    ("`raw/html/*.html`", "ответы действий, для которых в vedic-parser ещё нет "
+     "парсера; сохранены, чтобы разобрать их позже без нового запроса"),
+)
+
+
+def _section_19_extra(client: Client, data: Collection) -> list[str]:
+    """Prompt 01 §19: whatever the eighteen sections above do not unfold."""
+    out = ["## 19. Дополнительные данные VedicHoro", ""]
+    out += [
+        "Полная запись ответов сайта — в `raw/*.json`: разделы выше разворачивают "
+        "их в таблицы, но ничего не отбрасывают. Принцип Промпта 01 — лучше "
+        "сохранить лишнее, чем потерять нужное.",
+        "",
+        f"Блоков в кэше: {len(data.data)}.",
+        "",
+    ]
+    out += _table(["Где", "Что осталось в JSON"], FOLDED) + [""]
+
+    on_disk = {path.stem for path in sorted(client.raw_dir.glob("*.json"))}
+    extra = sorted(on_disk - set(data.data) - {"_chart"})
+    if extra:
+        out += [
+            "**Файлы в кэше, которых нет в текущем плане сбора** — остались от "
+            "прежнего плана и в разделы выше не попали: "
+            + ", ".join(f"`{name}.json`" for name in extra) + ".",
+            "",
+        ]
+    html = sorted(path.name for path in (client.raw_dir / "html").glob("*.html")) \
+        if (client.raw_dir / "html").is_dir() else []
+    if html:
+        out += [
+            "**Неразобранный HTML:** " + ", ".join(f"`{name}`" for name in html) + ".",
+            "",
+        ]
+    return out
+
+
 def _section_20_quality(client: Client, data: Collection, derived: dict[str, Any]) -> list[str]:
     out = ["## 20. Контроль качества этапа", ""]
     identical = {
@@ -884,17 +968,16 @@ def _section_20_quality(client: Client, data: Collection, derived: dict[str, Any
         ", ".join(f"{k} {v}" for k, v in identical.items()) + ".",
         "",
     ]
-    mismatches = ((derived or {}).get("karakas") or {}).get("mismatches") or []
-    if mismatches:
-        for text in mismatches:
-            title, _, detail = text.partition(": ")
+    disagreements = ((derived or {}).get("karakas") or {}).get("disagreements") or []
+    if disagreements:
+        for title, computed, reported in disagreements:
             out += [
                 "```",
                 "РАСХОЖДЕНИЕ",
                 f"Показатель: чара-карака {title}",
-                f"Значение VedicHoro: {detail.split('сайт показывает ')[-1]}",
-                f"Значение контрольного материала: "
-                f"{detail.split('даёт ')[-1].split(',')[0]} (расчёт по наибольшему градусу)",
+                f"Значение VedicHoro: {reported}",
+                f"Значение контрольного материала: {computed} "
+                "(расчёт по наибольшему градусу)",
                 "Возможная причина: сайт может использовать 8-караковую систему "
                 "или иной порядок отсчёта градуса для узлов.",
                 "```",

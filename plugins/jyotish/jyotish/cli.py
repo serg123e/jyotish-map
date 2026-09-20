@@ -4,6 +4,7 @@
     jyotish collect clients/ivan     # stage 01: fetch, derive, write both files
     jyotish status clients/ivan      # what is collected, what is missing
     jyotish soul-path clients/ivan   # stage 07: weights x scores, refuses if the gate is shut
+    jyotish crosscheck clients/ivan  # recompute locally and report every disagreement
     jyotish check clients/ivan       # stage 10: the checklist, as far as code can take it
 """
 
@@ -21,6 +22,7 @@ from . import crosscheck, patterns, render_raw, soul_path, validate
 from .client import Client, ConfigError, scaffold
 from .collect import RateLimited, build_plan, collect, from_cache
 from .derive import derive_all
+from .text import number
 
 DEFAULT_CLIENTS_DIR = Path("clients")
 
@@ -178,15 +180,26 @@ def _cmd_soul_path(args: argparse.Namespace) -> int:
               f"jyotish soul-path {args.client} --template", file=sys.stderr)
         return 1
 
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    scores = [
-        soul_path.LayerScore(item["key"], item["score"], item.get("rationale", ""))
-        for item in payload["layers"] if item.get("score") is not None
-    ]
-    subscales = [
-        soul_path.Subscale(item["key"], item["value"], item.get("explanation", ""))
-        for item in payload["subscales"] if item.get("value") is not None
-    ]
+    # soul_path_input.json is written by hand, so a malformed one is an
+    # expected outcome and must read as a message, not a traceback.
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise ConfigError(f"{path}: это не JSON — {error}") from error
+    try:
+        scores = [
+            soul_path.LayerScore(item["key"], item["score"], item.get("rationale", ""))
+            for item in payload["layers"] if item.get("score") is not None
+        ]
+        subscales = [
+            soul_path.Subscale(item["key"], item["value"], item.get("explanation", ""))
+            for item in payload["subscales"] if item.get("value") is not None
+        ]
+    except (KeyError, TypeError) as error:
+        raise ConfigError(
+            f"{path}: не хватает поля {error}. Заготовку с нужной структурой даёт "
+            f"`jyotish soul-path {args.client} --template`."
+        ) from error
     result = soul_path.compute(
         client, scores, subscales, available=available,
         raised_by=payload.get("raised_by", ""), lowered_by=payload.get("lowered_by", ""),
@@ -198,7 +211,7 @@ def _cmd_soul_path(args: argparse.Namespace) -> int:
     )
     chapter = client.stages_dir / "07.md"
     chapter.write_text(soul_path.render(result), encoding="utf-8")
-    print(f"Пройденность пути души: {result.total:.0f}%")
+    print(f"Пройденность пути души: {number(result.total)}%")
     for note in result.notes:
         print(f"  {note}")
     print(chapter)
@@ -258,9 +271,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return args.handler(args)
-    except (ConfigError, VedicHoroError) as error:
+    except (ConfigError, VedicHoroError, soul_path.ScoringError) as error:
         print(f"ошибка: {error}", file=sys.stderr)
         return 1
+    except soul_path.GateClosed as error:
+        print(f"{error}", file=sys.stderr)
+        return 3
 
 
 if __name__ == "__main__":
