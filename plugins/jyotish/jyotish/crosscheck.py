@@ -16,12 +16,19 @@ One disagreement is expected and is not a defect: **node type**. Mean and true
 Rahu differ by up to ~2°, enough to change the sign and the house. The report
 names it rather than averaging it away.
 
-The module is optional. Without `jyotishganit` installed, everything else in the
-pipeline works unchanged and the cross-check reports itself as unavailable.
+Two local sources take part when installed. **PyJHora** (Swiss Ephemeris) is
+the one that can replace the site block by block: with the conventions pinned
+in :mod:`jyotish.local` it reproduces the site's positions to 0.01′, every
+varga's signs, the Ashtakavarga and the Vimshottari lords, so the report says
+per block whether it agrees to tolerance, and ``state/crosscheck.json`` records
+that verdict for ``collect --source auto``. **jyotishganit** stays as the
+third, independent ephemeris for the ayanamsa check. Without either installed
+the cross-check reports itself as unavailable and nothing else changes.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from dataclasses import dataclass, field
@@ -30,6 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from .client import Client
+from . import local as local_module
 from .derive import SIGNS_EN
 
 #: How jyotishganit names the bodies, mapped to the site's codes.
@@ -55,6 +63,12 @@ EPHEMERIS_KEYS = {
 #: Arcminutes of disagreement that count as noise, a warning, and a real conflict.
 TOLERANCE_OK = 2.0
 TOLERANCE_WARN = 30.0
+
+#: Hours a dasha boundary may differ and still count as the same boundary. The
+#: Vimshottari start is absurdly sensitive to the Moon: 3″ of longitude move
+#: it by twelve hours, while one minute of birth time moves it by five days.
+#: A boundary that agrees to a day agrees as well as the birth time allows.
+DASHA_TOLERANCE_HOURS = 24.0
 
 OK = "совпало"
 WARN = "внимание"
@@ -86,13 +100,27 @@ class Report:
     local_ayanamsa: float | None = None
     implied_ayanamsa: float | None = None
     bhava_bala: dict[int, float] = field(default_factory=dict)
+    #: Which local sources took part, for the heading.
+    sources: list[str] = field(default_factory=list)
+    #: Collection keys the PyJHora backend reproduced, and how well:
+    #: OK means ``collect --source auto`` may take that block locally.
+    verified: dict[str, str] = field(default_factory=dict)
 
     @property
     def conflicts(self) -> list[Finding]:
         return [f for f in self.findings if f.conflicting]
 
+    @property
+    def replaceable(self) -> list[str]:
+        return sorted(key for key, status in self.verified.items() if status == OK)
+
 
 def available() -> bool:
+    """Whether any local source is installed."""
+    return local_module.available() or _jyotishganit_available()
+
+
+def _jyotishganit_available() -> bool:
     try:
         import jyotishganit  # noqa: F401
     except ImportError:
@@ -327,11 +355,28 @@ def compare(client: Client, collection: dict[str, Any]) -> Report:
     site_ayanamsa, site = _site_positions(collection)
     if not site:
         raise CrossCheckUnavailable("нет данных этапа 01: сначала выполните сбор")
+    if not available():
+        raise CrossCheckUnavailable(
+            "нет ни PyJHora, ни jyotishganit — второй источник недоступен. "
+            "Поставьте: pip install 'jyotish-map[local]' (или [crosscheck])")
 
+    report = Report(site_ayanamsa=site_ayanamsa)
+    if local_module.available():
+        report.sources.append("PyJHora (Swiss Ephemeris)")
+        _compare_pyjhora(report, client, collection, site)
+    if _jyotishganit_available():
+        report.sources.append("jyotishganit (NASA JPL через skyfield)")
+        _compare_jyotishganit(report, client, collection, site)
+    return report
+
+
+def _compare_jyotishganit(report: Report, client: Client, collection: dict[str, Any],
+                          site: dict[str, dict[str, Any]]) -> None:
+    """The original check: positions, nakshatras, SAV, and the ayanamsa test."""
+    site_ayanamsa = report.site_ayanamsa
     chart = _local_chart(client)
     local_ayanamsa, local, bhava = _local_positions(chart)
-    report = Report(site_ayanamsa=site_ayanamsa, local_ayanamsa=local_ayanamsa,
-                    bhava_bala=bhava)
+    report.local_ayanamsa, report.bhava_bala = local_ayanamsa, bhava
 
     # Both sources publish sidereal positions, so those are compared directly.
     # The ayanamsa is then checked separately, against the true ephemeris — a
@@ -442,7 +487,183 @@ def compare(client: Client, collection: dict[str, Any]) -> Report:
             note="в рупах. Сверить не с чем: реализации расходятся, "
                  "у PyJHora на этом расчёте открытый TODO",
         ))
-    return report
+
+
+# ---------------------------------------------------------------------------
+# PyJHora: block by block, so a block can be taken locally once it agrees
+# ---------------------------------------------------------------------------
+
+
+def _compare_pyjhora(report: Report, client: Client, collection: dict[str, Any],
+                     site: dict[str, dict[str, Any]]) -> None:
+    backend = local_module.Backend(client)
+    _pyjhora_ayanamsa(report, backend)
+    _pyjhora_positions(report, backend, site)
+    _pyjhora_vargas(report, backend, collection)
+    _pyjhora_ashtakavarga(report, backend, collection)
+    _pyjhora_dashas(report, backend, collection)
+    _pyjhora_shadbala(report, backend, collection)
+
+
+def _pyjhora_ayanamsa(report: Report, backend: Any) -> None:
+    if report.site_ayanamsa is None:
+        return
+    drift = abs(backend.ayanamsa - report.site_ayanamsa) * 60
+    report.findings.append(Finding(
+        subject="Айанамша: заявленная сайтом против True Chitra",
+        status=OK if drift < TOLERANCE_OK else CONFLICT,
+        site=f"{report.site_ayanamsa:.4f}°", local=f"{backend.ayanamsa:.4f}° (PyJHora, True Chitra)",
+        note=f"{drift:.2f}′" + ("" if drift < TOLERANCE_OK else
+                                " — **не тот вариант айанамши**; см. jyotish.local"),
+    ))
+
+
+def _pyjhora_positions(report: Report, backend: Any, site: dict[str, dict[str, Any]]) -> None:
+    local = {p.code: p for p in backend.positions(1)}
+    worst = 0.0
+    for code in ("As",) + CLASSICAL + ("Ra", "Ke"):
+        here, there = site.get(code), local.get(code)
+        if not here or not there:
+            continue
+        delta = _arcmin(there.longitude, here["sidereal"])
+        worst = max(worst, abs(delta))
+        report.findings.append(Finding(
+            subject=f"{code}: долгота (PyJHora)",
+            status=OK if abs(delta) < TOLERANCE_OK else WARN if abs(delta) < TOLERANCE_WARN else CONFLICT,
+            site=_place(here),
+            local=f"{SIGNS_EN[there.sign]} {there.degree:.3f}°",
+            note=f"{delta:+.2f}′" + ("" if SIGNS_EN[there.sign] == here["sign"] else "; **знаки разные**"),
+        ))
+    report.verified["show-info-D1:positions"] = OK if worst < TOLERANCE_OK else CONFLICT
+
+
+def _pyjhora_vargas(report: Report, backend: Any, collection: dict[str, Any]) -> None:
+    for key in sorted(k for k in collection if k.startswith("show-chart-D")):
+        varga = key.removeprefix("show-chart-")
+        site_signs = {p["code"]: p["sign"] for p in (collection[key] or {}).get("planets", [])}
+        if not site_signs:
+            continue
+        local_signs = {p["code"]: p["sign"] for p in backend.show_chart(varga)["planets"]}
+        differ = {c: (site_signs[c], local_signs.get(c)) for c in site_signs
+                  if site_signs[c] != local_signs.get(c)}
+        status = OK if not differ else CONFLICT
+        report.verified[key] = status
+        report.findings.append(Finding(
+            subject=f"{varga}: знаки всех тел",
+            status=status,
+            site="совпали все десять" if not differ else ", ".join(f"{c} {s}" for c, (s, _) in differ.items()),
+            local="" if not differ else ", ".join(f"{c} {l}" for c, (_, l) in differ.items()),
+            note="" if not differ else "**расходится** — другой способ деления варги; "
+                                      "см. CHART_METHODS в jyotish.local",
+        ))
+
+
+def _pyjhora_ashtakavarga(report: Report, backend: Any, collection: dict[str, Any]) -> None:
+    site_av = (collection.get("show-info-D1") or {}).get("ashtakavarga") or {}
+    if not site_av.get("sav"):
+        return
+    bav, sav = backend.ashtakavarga()
+    sav_same = list(site_av["sav"]) == sav
+    bav_differ = [code for code, rows in (site_av.get("bav") or {}).items()
+                  if code in bav and list(rows) != bav[code]]
+    status = OK if sav_same and not bav_differ else CONFLICT
+    report.verified["ashtakavarga"] = status
+    report.findings.append(Finding(
+        subject="Аштакаварга: САВ и все БАВ (PyJHora, таблица BPHS)",
+        status=status,
+        site=", ".join(str(v) for v in site_av["sav"]),
+        local=", ".join(str(v) for v in sav),
+        note="совпали САВ и восемь БАВ" if status == OK else
+             f"**расходится**: БАВ {', '.join(bav_differ) or 'сходятся'}, "
+             f"САВ {'сходится' if sav_same else 'нет'}",
+    ))
+
+
+def _pyjhora_dashas(report: Report, backend: Any, collection: dict[str, Any]) -> None:
+    for level in (1, 2):
+        key = f"show-dasha-vimshottari-{level}"
+        site_periods = (collection.get(key) or {}).get("periods") or []
+        if not site_periods:
+            continue
+        local_periods = backend.vimshottari(level)["periods"]
+        same_lords = [p["lords"] for p in site_periods] == [p["lords"] for p in local_periods]
+        worst = 0.0
+        for here, there in zip(site_periods, local_periods):
+            delta = (datetime.fromisoformat(there["start"]) - datetime.fromisoformat(here["start"]))
+            worst = max(worst, abs(delta.total_seconds()) / 3600)
+        status = OK if same_lords and worst <= DASHA_TOLERANCE_HOURS else CONFLICT
+        report.verified[key] = status
+        report.findings.append(Finding(
+            subject=f"Вимшоттари, уровень {level}: границы {len(site_periods)} периодов",
+            status=status,
+            site=site_periods[0]["start"], local=local_periods[0]["start"],
+            note=(f"порядок управителей {'совпал' if same_lords else '**разный**'}; "
+                  f"границы расходятся не больше чем на {worst:.1f} ч"
+                  + ("" if worst <= DASHA_TOLERANCE_HOURS else " — **больше суток**")
+                  + ". Двенадцать часов здесь — три угловые секунды Луны; минута "
+                    "времени рождения сдвигает те же границы на пять суток."),
+        ))
+
+
+def _pyjhora_shadbala(report: Report, backend: Any, collection: dict[str, Any]) -> None:
+    site_rows = (collection.get("show-bala-D1") or {}).get("shad_bala") or []
+    if not site_rows:
+        return
+    local = backend.shadbala()
+    for row in site_rows:
+        code = row.get("code")
+        if code not in local:
+            continue
+        components = row.get("components") or {}
+        parts = []
+        worst_pct = 0.0
+        for name in ("sthana_bala", "kala_bala", "dig_bala", "cheshta_bala", "drik_bala", "shad_bala"):
+            here = (components.get(name) or {}).get("virupas")
+            there = local[code].get(name)
+            if here is None or there is None:
+                continue
+            gap = there - here
+            if name == "shad_bala" and here:
+                worst_pct = abs(gap) / abs(here) * 100
+            parts.append(f"{name.removesuffix('_bala')} {here:.0f}/{there:.0f}")
+        report.findings.append(Finding(
+            subject=f"Шадбала {code}: сайт/PyJHora, вирупы",
+            status=OK if worst_pct < 5 else WARN,
+            site=f"{(components.get('shad_bala') or {}).get('virupas')}",
+            local=f"{local[code].get('shad_bala'):.2f}",
+            note="; ".join(parts) + (
+                "" if worst_pct < 5 else
+                f" — итог расходится на {worst_pct:.0f}%: **соглашения расчёта не сведены**, "
+                "локальная Шадбала не подставляется"),
+        ))
+    report.verified["show-bala-D1"] = WARN
+
+
+def verified_path(client: Client) -> Path:
+    return client.state_dir / "crosscheck.json"
+
+
+def write_verified(client: Client, report: Report) -> Path:
+    """Record, per block, whether the local computation may stand in for the site."""
+    client.ensure_dirs()
+    path = verified_path(client)
+    path.write_text(json.dumps({
+        "checked": datetime.now().isoformat(timespec="minutes"),
+        "sources": report.sources,
+        "local": report.verified,
+        "replaceable": report.replaceable,
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
+def read_verified(client: Client) -> dict[str, str]:
+    path = verified_path(client)
+    if not path.exists():
+        return {}
+    try:
+        return dict(json.loads(path.read_text(encoding="utf-8")).get("local") or {})
+    except (json.JSONDecodeError, AttributeError):
+        return {}
 
 
 def _explain_ascendant(report: Report, site: dict[str, Any], local: dict[str, Any],
@@ -477,7 +698,7 @@ def render(report: Report) -> str:
     lines = [
         "# Сверка с независимым расчётом",
         "",
-        f"Источники: vedic-horo и jyotishganit (NASA JPL через skyfield). "
+        f"Источники: vedic-horo и {', '.join(report.sources) or 'локальный расчёт'}. "
         f"Расхождений: **{len(conflicts)}**.",
         "",
         "Сравнение не выбирает победителя. Совпадение двух независимых расчётов "
@@ -496,4 +717,11 @@ def render(report: Report) -> str:
         lines += ["", "## Требуют разбирательства", ""]
         lines += [f"- **{f.subject}**: {f.note or 'источники не сходятся'}"
                   for f in conflicts]
+    if report.verified:
+        lines += ["", "## Что можно считать локально для этой карты", ""]
+        for key, status in sorted(report.verified.items()):
+            verdict = ("совпало с сайтом — `collect --source auto` возьмёт локально"
+                       if status == OK else
+                       "остаётся за сайтом" + (" (соглашения не сведены)" if status == WARN else " (расходится)"))
+            lines.append(f"- `{key}`: {verdict}")
     return "\n".join(lines).rstrip() + "\n"

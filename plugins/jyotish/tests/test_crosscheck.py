@@ -298,5 +298,83 @@ def test_the_node_type_is_a_setting_once_recorded(tmp_path) -> None:
              "latitude": "55.45", "longitude": "37.37"}
     assert Client.from_dict(chart, tmp_path).nodes == ""
     assert Client.from_dict({**chart, "nodes": "mean"}, tmp_path).nodes == "mean"
+    assert Client.from_dict({**chart, "nodes": True}, tmp_path).nodes == "true"   # YAML `true`
     with pytest.raises(ConfigError, match="nodes"):
         Client.from_dict({**chart, "nodes": "sometimes"}, tmp_path)
+
+
+# ---- the PyJHora block-by-block verdicts, with a stand-in backend ------------
+
+
+class StandIn:
+    """What _compare_pyjhora needs from a backend, with numbers we choose."""
+
+    ayanamsa = 23.5704
+
+    def __init__(self, charts, dashas, sav, bav):
+        self._charts, self._dashas, self._sav, self._bav = charts, dashas, sav, bav
+
+    def show_chart(self, varga):
+        return {"planets": [{"code": c, "sign": s} for c, s in self._charts[varga].items()]}
+
+    def vimshottari(self, level):
+        return {"periods": self._dashas[level]}
+
+    def ashtakavarga(self):
+        return self._bav, self._sav
+
+
+def test_verdicts_are_per_block_and_written_for_collect(tmp_path) -> None:
+    from jyotish.client import Client
+    from jyotish.crosscheck import (_pyjhora_ashtakavarga, _pyjhora_dashas, _pyjhora_vargas,
+                                    read_verified, write_verified)
+
+    site = {
+        "show-chart-D9": {"planets": [{"code": "As", "sign": "Sg"}, {"code": "Mo", "sign": "Sc"}]},
+        "show-chart-D60": {"planets": [{"code": "As", "sign": "Sg"}, {"code": "Mo", "sign": "Pi"}]},
+        "show-info-D1": {"ashtakavarga": {"sav": [27, 28, 42, 25, 21, 29, 23, 25, 30, 32, 34, 21],
+                                          "bav": {"Su": [5, 2, 7, 2, 2, 6, 3, 4, 3, 5, 4, 5]}}},
+        "show-dasha-vimshottari-1": {"periods": [
+            {"lords": ["Ve"], "start": "1964-05-02T05:27"}, {"lords": ["Su"], "start": "1984-05-02T08:31"}]},
+    }
+    backend = StandIn(
+        charts={"D9": {"As": "Sg", "Mo": "Sc"}, "D60": {"As": "Sg", "Mo": "Ar"}},
+        dashas={1: [{"lords": ["Ve"], "start": "1964-05-01T17:16"}, {"lords": ["Su"], "start": "1984-05-01T20:20"}]},
+        sav=[27, 28, 42, 25, 21, 29, 23, 25, 30, 32, 34, 21],
+        bav={"Su": [5, 2, 7, 2, 2, 6, 3, 4, 3, 5, 4, 5]},
+    )
+    report = Report()
+    _pyjhora_vargas(report, backend, site)
+    _pyjhora_ashtakavarga(report, backend, site)
+    _pyjhora_dashas(report, backend, site)
+    assert report.verified["show-chart-D9"] == OK
+    assert report.verified["show-chart-D60"] == CONFLICT
+    assert report.verified["ashtakavarga"] == OK
+    assert report.verified["show-dasha-vimshottari-1"] == OK      # 12 h, within a day
+    assert report.replaceable == ["ashtakavarga", "show-chart-D9", "show-dasha-vimshottari-1"]
+
+    client = Client.from_dict({"slug": "t", "date": "20.03.1980", "time": "07:45:00",
+                               "timezone": "+3", "latitude": "54.25", "longitude": "42.50"}, tmp_path)
+    write_verified(client, report)
+    assert read_verified(client)["show-chart-D9"] == OK
+    assert read_verified(client)["show-chart-D60"] == CONFLICT
+
+
+def test_a_dasha_boundary_more_than_a_day_off_is_a_conflict() -> None:
+    from jyotish.crosscheck import _pyjhora_dashas
+
+    site = {"show-dasha-vimshottari-1": {"periods": [{"lords": ["Ve"], "start": "1964-05-02T05:27"}]}}
+    backend = StandIn({}, {1: [{"lords": ["Ve"], "start": "1964-05-04T05:27"}]}, [], {})
+    report = Report()
+    _pyjhora_dashas(report, backend, site)
+    assert report.verified["show-dasha-vimshottari-1"] == CONFLICT
+    assert "больше суток" in report.findings[0].note
+
+
+def test_read_verified_is_empty_without_a_check(tmp_path) -> None:
+    from jyotish.client import Client
+    from jyotish.crosscheck import read_verified
+
+    client = Client.from_dict({"slug": "t", "date": "20.03.1980", "time": "07:45:00",
+                               "timezone": "+3", "latitude": "54.25", "longitude": "42.50"}, tmp_path)
+    assert read_verified(client) == {}

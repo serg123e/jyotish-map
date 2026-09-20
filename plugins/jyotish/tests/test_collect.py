@@ -226,3 +226,81 @@ def test_an_empty_answer_is_named_as_the_sites_not_ours(client: Client, monkeypa
     result = collect(client, plan=[Request("show-current-periods", optional=True)], probe=True)
     assert "сайт вернул пустой ответ" in result.gaps[0].reason
     assert "не реализован" not in result.gaps[0].reason
+
+
+# ---- where a block comes from -----------------------------------------------
+
+
+class FakeBackend:
+    """Stands in for jyotish.local.Backend: no ephemeris, no network."""
+
+    def __init__(self, client):
+        self.client = client
+
+    def payload(self, key):
+        if key.startswith("show-chart-") or key.startswith("show-dasha-vimshottari-"):
+            return {"source": "local", "key": key}
+        if key == "show-info-D1":
+            return {"source": "local", "planets": []}
+        return None
+
+
+VERIFIED = {"show-chart-D9": "совпало", "show-chart-D60": "расходится",
+            "show-dasha-vimshottari-1": "совпало"}
+
+
+def test_the_policy_never_replaces_the_planets_table() -> None:
+    from jyotish.collect import local_allowed
+
+    assert not local_allowed("local", "show-info-D1", {})
+    assert not local_allowed("auto", "show-info-D1", {"show-info-D1": "совпало"})
+
+
+def test_auto_takes_only_what_the_cross_check_verified() -> None:
+    from jyotish.collect import local_allowed
+
+    assert local_allowed("auto", "show-chart-D9", VERIFIED)
+    assert not local_allowed("auto", "show-chart-D60", VERIFIED)      # differed
+    assert not local_allowed("auto", "show-chart-D10", VERIFIED)      # never checked
+    assert not local_allowed("auto", "show-chart-D9", {})             # no check at all
+    assert local_allowed("local", "show-chart-D10", {})
+    assert not local_allowed("site", "show-chart-D9", VERIFIED)
+    assert not local_allowed("local", "show-bala-D1", {})
+
+
+def test_a_bad_source_is_refused() -> None:
+    from jyotish.collect import local_allowed
+
+    with pytest.raises(ValueError, match="source"):
+        local_allowed("cloud", "show-chart-D9", {})
+
+
+def test_verified_blocks_are_computed_locally_without_the_network(client: Client, monkeypatch) -> None:
+    monkeypatch.setattr(collect_module.local_module, "Backend", FakeBackend)
+    _stub_api(monkeypatch, show_chart=_never_called)
+    monkeypatch.setattr(collect_module, "_ensure_session", _never_called)
+    plan = [Request("show-chart", {"divisional": "D9"})]
+    result = collect(client, plan=plan, probe=False, source="auto", verified=VERIFIED)
+    assert result.local == ["show-chart-D9"]
+    assert result.data["show-chart-D9"]["source"] == "local"
+    # …and it is cached like any other block.
+    assert (client.raw_dir / "show-chart-D9.json").exists()
+
+
+def test_an_unverified_block_still_goes_to_the_site(client: Client, monkeypatch) -> None:
+    monkeypatch.setattr(collect_module.local_module, "Backend", FakeBackend)
+    _stub_api(monkeypatch, show_chart=lambda session, chart, **kw: {"from": "site"})
+    monkeypatch.setattr(collect_module, "_ensure_session", lambda c, s, t: (object(), 0.0))
+    plan = [Request("show-chart", {"divisional": "D60"})]
+    result = collect(client, plan=plan, probe=False, source="auto", verified=VERIFIED)
+    assert result.local == [] and result.data["show-chart-D60"] == {"from": "site"}
+
+
+def test_source_local_takes_everything_the_backend_offers(client: Client, monkeypatch) -> None:
+    monkeypatch.setattr(collect_module.local_module, "Backend", FakeBackend)
+    _stub_api(monkeypatch, show_chart=_never_called, show_info=lambda s, c, **kw: {"from": "site"})
+    monkeypatch.setattr(collect_module, "_ensure_session", lambda c, s, t: (object(), 0.0))
+    plan = [Request("show-chart", {"divisional": "D60"}), Request("show-info", {"divisional": "D1"})]
+    result = collect(client, plan=plan, probe=False, source="local")
+    assert result.local == ["show-chart-D60"]
+    assert result.data["show-info-D1"] == {"from": "site"}        # never local

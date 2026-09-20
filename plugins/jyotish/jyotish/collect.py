@@ -29,6 +29,7 @@ from urllib3.util.retry import Retry
 from vedic_parser import Chart, Session
 from vedic_parser.session import AccessDenied, VedicHoroError
 
+from . import local as local_module
 from .client import Client
 
 
@@ -124,6 +125,8 @@ class Collection:
     gaps: list[Gap] = field(default_factory=list)
     fetched: list[str] = field(default_factory=list)
     cached: list[str] = field(default_factory=list)
+    #: Keys computed locally instead of being asked of the site.
+    local: list[str] = field(default_factory=list)
 
     def get(self, key: str) -> dict[str, Any] | None:
         return self.data.get(key)
@@ -200,6 +203,31 @@ def build_plan(client: Client) -> list[Request]:
     return plan
 
 
+#: Where a block comes from. ``site`` — always the site. ``local`` — the local
+#: computation for every block it can produce, verified or not (say so).
+#: ``auto`` — local only for blocks the cross-check found to agree with the site
+#: for this chart (state/crosscheck.json), the site for the rest.
+SOURCES = ("site", "local", "auto")
+
+#: The one block the backend produces only partially: the site's planets table
+#: carries dignities, functional status, strengths and marks that no local
+#: computation fills in. Positions from it are compared, never substituted.
+NEVER_LOCAL = ("show-info-D1",)
+
+
+def local_allowed(source: str, key: str, verified: dict[str, str]) -> bool:
+    """Whether ``key`` may be computed locally under ``source``."""
+    if source not in SOURCES:
+        raise ValueError(f"source: ожидалось одно из {SOURCES}, получено {source!r}")
+    if source == "site" or key in NEVER_LOCAL:
+        return False
+    if not any(key.startswith(prefix) for prefix in local_module.LOCAL_KEYS):
+        return False
+    if source == "local":
+        return True
+    return verified.get(key) == "совпало"
+
+
 def from_cache(client: Client, *, plan: Iterable[Request] | None = None) -> Collection:
     """Everything already on disk, with no network access at all.
 
@@ -230,24 +258,33 @@ def collect(
     refresh: bool = False,
     probe: bool = True,
     session: Session | None = None,
+    source: str = "auto",
+    verified: dict[str, str] | None = None,
     log: Callable[[str], None] = lambda message: None,
 ) -> Collection:
     """Run the plan, using the cache for anything already fetched.
 
     ``refresh`` re-fetches everything. ``probe`` saves the raw HTML of actions
     whose parser is missing, so the response can be parsed later without
-    asking the site again.
+    asking the site again. ``source`` picks where each block comes from (see
+    :data:`SOURCES`); ``verified`` is the cross-check's verdict per key,
+    read from the reading's state when not given.
     """
     # Only the cache directory: a sweep for a shifted chart (sensitivity)
     # lives in a scratch root that must not sprout stages/ and state/.
     client.raw_dir.mkdir(parents=True, exist_ok=True)
     planned = list(plan if plan is not None else build_plan(client))
     _check_cache_identity(client, refresh=refresh)
+    if verified is None and source == "auto":
+        from .crosscheck import read_verified
+        verified = read_verified(client)
+    verified = verified or {}
 
     result = Collection()
     api = _load_api()
     opened: Session | None = session
     last_call = 0.0
+    backend: Any = None
 
     for request in planned:
         cache_path = client.raw_dir / f"{request.key}.json"
@@ -265,6 +302,18 @@ def collect(
 
         func = api.get(API_NAMES.get(request.action, ""))
         section = SECTIONS.get(request.action, "")
+
+        if local_allowed(source, request.key, verified):
+            if backend is None:
+                backend = local_module.Backend(client)
+            payload = backend.payload(request.key)
+            if payload is not None:
+                log(f"  = {request.key} (локально)")
+                cache_path.write_text(
+                    json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                result.data[request.key] = payload
+                result.local.append(request.key)
+                continue
 
         if func is None:
             html_path = None

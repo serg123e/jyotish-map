@@ -30,7 +30,8 @@ from typing import Any, Callable, Mapping, Sequence
 from vedic_parser import Chart
 
 from .client import Client
-from .collect import Request, collect, from_cache
+from . import local as local_module
+from .collect import Request, collect, from_cache, local_allowed
 from .derive import SIGN_CODES, SIGNS_RU
 from .text import counted, number
 
@@ -214,6 +215,8 @@ class Report:
     #: means a later birth moves the boundaries later.
     days_per_minute: float | None = None
     missing: list[str] = field(default_factory=list)
+    #: ``site`` or ``local`` — what computed the shifted charts.
+    source: str = "site"
 
     @property
     def collected_offsets(self) -> list[int]:
@@ -289,6 +292,17 @@ def analyse(client: Client, runs: Mapping[int, Mapping[str, Any]], vargas: Seque
 # ---------------------------------------------------------------------------
 
 
+def can_run_locally(client: Client, vargas: Sequence[str], verified: dict[str, str]) -> bool:
+    """Whether every block the sweep reads has been verified for this chart.
+
+    The sweep compares signs and dasha boundaries; those are exactly the
+    blocks the cross-check settles. When all of them agree with the site, the
+    sweep costs no requests and runs in a second.
+    """
+    keys = [r.key for r in build_offset_plan(vargas) if r.key != "show-info-D1"]
+    return local_module.available() and all(local_allowed("auto", k, verified) for k in keys)
+
+
 def run(
     client: Client,
     *,
@@ -296,24 +310,52 @@ def run(
     step: int = 1,
     vargas: Sequence[str] | None = None,
     refresh: bool = False,
+    source: str = "auto",
+    verified: dict[str, str] | None = None,
     log: Callable[[str], None] = lambda message: None,
 ) -> Report:
-    """Collect every offset (cached after the first time) and compare."""
+    """Collect every offset (cached after the first time) and compare.
+
+    ``source``: ``site`` asks the site for every offset; ``local`` computes
+    every offset (and the base) with the local backend; ``auto`` computes
+    locally when every block the sweep reads is verified for this chart,
+    and asks the site otherwise.
+    """
     chosen = tuple(vargas or client.collect.vargas)
+    if verified is None:
+        from .crosscheck import read_verified
+        verified = read_verified(client)
+    if source == "auto":
+        source = "local" if can_run_locally(client, chosen, verified) else "site"
+
+    plan = build_offset_plan(chosen)
+    runs: dict[int, Mapping[str, Any]] = {}
+    if source == "local":
+        # The base too: comparing the site's chart with local offsets would
+        # put a 0.01′ seam at zero, and a sign boundary can sit in it.
+        for minutes in [0] + offsets(window, step):
+            backend = local_module.Backend(offset_client(client, minutes))
+            runs[minutes] = {r.key: backend.payload(r.key) for r in plan}
+            log(f"смещение {offset_label(minutes)} мин — локально")
+        report = analyse(client, runs, chosen, window=window, step=step)
+        report.source = "local"
+        return report
+
     base = from_cache(client)
     if not base.get("show-chart-D1"):
         raise NotCollected(
             f"базовая карта не собрана ({client.raw_dir / 'show-chart-D1.json'}) — "
             f"сначала `jyotish collect {client.root}`"
         )
-    runs: dict[int, Mapping[str, Any]] = {0: base.data}
-    plan = build_offset_plan(chosen)
+    runs[0] = base.data
     for minutes in offsets(window, step):
         shifted = offset_client(client, minutes)
         log(f"смещение {offset_label(minutes)} мин → {shifted.chart.date} {shifted.chart.time}")
-        result = collect(shifted, plan=plan, refresh=refresh, probe=False, log=log)
+        result = collect(shifted, plan=plan, refresh=refresh, probe=False, source="site", log=log)
         runs[minutes] = result.data
-    return analyse(client, runs, chosen, window=window, step=step)
+    report = analyse(client, runs, chosen, window=window, step=step)
+    report.source = "site"
+    return report
 
 
 def write(report: Report) -> tuple[Path, Path]:
@@ -333,6 +375,7 @@ def as_dict(report: Report) -> dict[str, Any]:
         "window": report.window,
         "step": report.step,
         "offsets": report.collected_offsets,
+        "source": report.source,
         "stable": {varga: list(span) for varga, span in report.stable.items()},
         "changes": [
             {"varga": c.varga, "body": c.body, "minutes": c.minutes,
@@ -419,9 +462,9 @@ def render(report: Report) -> str:
         "# Чувствительность карты ко времени рождения",
         "",
         f"Записанное время: **{client.chart.time}** ({client.chart.date}). "
-        f"Карта пересобрана на сайте со смещением от {-report.window:+d} до "
-        f"{report.window:+d} мин с шагом {report.step}; ниже — сравнение выдач сайта, "
-        "а не собственный расчёт.",
+        f"Карта пересобрана {'локально (PyJHora, сверено с сайтом по этим блокам)' if report.source == 'local' else 'на сайте'} "
+        f"со смещением от {-report.window:+d} до {report.window:+d} мин с шагом {report.step}; "
+        "ниже — сравнение выдач одного и того же расчёта, а не рассуждение.",
         "",
     ]
     if report.missing:

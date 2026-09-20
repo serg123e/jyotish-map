@@ -18,6 +18,9 @@ dev = ["pytest>=7"]
 # Второй, независимый источник данных для команды crosscheck. MIT, эфемериды
 # NASA JPL через skyfield — без AGPL-обязательств Swiss Ephemeris.
 crosscheck = ["jyotishganit>=0.1.3", "skyfield>=1.45"]
+# Локальный расчёт (второй источник и, по величинам, первый). AGPL: PyJHora и
+# Swiss Ephemeris. Остальное — то, что PyJHora импортирует, но не объявляет.
+local = ["PyJHora>=4.8.7", "pyswisseph>=2.10", "geocoder", "pytz", "timezonefinder", "geopy"]
 
 [project.scripts]
 jyotish = "jyotish.cli:main"

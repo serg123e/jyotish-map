@@ -254,3 +254,48 @@ def test_a_sign_that_changes_at_one_minute_is_not_reported_as_zero_minutes(clien
     assert "при 22:59 и при 23:01 шаштьямша другая" in text
     assert "всего 0 минут" not in text
     assert "с точностью лучше 1 минуты" in text
+
+
+# ---- a local sweep needs neither the cache nor the network -------------------
+
+
+class FakeLocal:
+    """The fake site as a backend: the same answers, computed for a shifted client."""
+
+    def __init__(self, client):
+        self.chart = client.chart
+
+    def payload(self, key):
+        if key.startswith("show-chart-"):
+            return fake_show_chart(None, self.chart, key.removeprefix("show-chart-"))
+        if key == "show-info-D1":
+            return fake_show_info(None, self.chart)
+        if key.startswith("show-dasha-vimshottari-"):
+            return fake_show_dasha(None, self.chart)
+        return None
+
+
+def test_a_local_sweep_gives_the_same_report_with_no_cache(tmp_path: Path, monkeypatch) -> None:
+    client = Client.from_dict(dict(CHART), tmp_path)          # nothing collected at all
+    monkeypatch.setattr(sensitivity.local_module, "Backend", FakeLocal)
+    monkeypatch.setattr(sensitivity.local_module, "available", lambda: True)
+    monkeypatch.setattr(collect_module, "_ensure_session",
+                        lambda *a: (_ for _ in ()).throw(AssertionError("сеть не нужна")))
+    report = run(client, window=3, source="local")
+    assert report.source == "local"
+    assert report.stable["D60"] == (-2, 1)
+    assert not (client.root / "sensitivity").exists()
+    assert "локально" in render(report)
+
+
+def test_auto_runs_locally_only_when_every_block_is_verified(tmp_path: Path, monkeypatch) -> None:
+    client = Client.from_dict(dict(CHART), tmp_path)
+    monkeypatch.setattr(sensitivity.local_module, "Backend", FakeLocal)
+    monkeypatch.setattr(sensitivity.local_module, "available", lambda: True)
+    every = {k: "совпало" for k in ("show-chart-D1", "show-chart-D9", "show-chart-D60",
+                                    "show-dasha-vimshottari-1")}
+    assert sensitivity.can_run_locally(client, ("D1", "D9", "D60"), every)
+    assert not sensitivity.can_run_locally(client, ("D1", "D9", "D60"), {**every, "show-chart-D60": "расходится"})
+    assert run(client, window=1, source="auto", verified=every).source == "local"
+    with pytest.raises(NotCollected):                 # not verified → the site → nothing cached
+        run(client, window=1, source="auto", verified={})

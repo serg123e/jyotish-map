@@ -283,7 +283,10 @@ class Client:
             timeout=int(collect_raw.get("timeout", defaults.timeout)),
         )
 
-        nodes = str(data.get("nodes", "") or "")
+        # YAML reads a bare `true` as a boolean, and the natural spelling of
+        # «истинный узел» is exactly `nodes: true`.
+        raw_nodes = data.get("nodes", "")
+        nodes = "true" if raw_nodes is True else str(raw_nodes or "").lower()
         if nodes not in ("", "mean", "true"):
             raise ConfigError(f"nodes: ожидалось mean или true, получено {nodes!r}")
 

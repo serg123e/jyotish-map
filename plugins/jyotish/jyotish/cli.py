@@ -49,6 +49,10 @@ def build_parser() -> argparse.ArgumentParser:
                              help="не сохранять сырой HTML действий без парсера")
     collect_cmd.add_argument("--plan-only", action="store_true",
                              help="показать план запросов и выйти, ничего не запрашивая")
+    collect_cmd.add_argument("--source", choices=("site", "local", "auto"), default="auto",
+                             help="откуда брать блоки: site — всё с сайта; local — всё, что "
+                                  "умеет локальный расчёт; auto — локально только сверенные "
+                                  "по crosscheck блоки (по умолчанию)")
     collect_cmd.set_defaults(handler=_cmd_collect)
 
     status_cmd = sub.add_parser("status", help="что уже сделано, какие этапы пройдены, что дальше")
@@ -89,6 +93,9 @@ def build_parser() -> argparse.ArgumentParser:
                           help="перезапросить смещённые карты, игнорируя кэш")
     sens_cmd.add_argument("--plan-only", action="store_true",
                           help="показать число запросов и выйти")
+    sens_cmd.add_argument("--source", choices=("site", "local", "auto"), default="auto",
+                          help="site — сайт; local — локальный расчёт; auto — локально, "
+                               "если все нужные блоки сверены (по умолчанию)")
     sens_cmd.set_defaults(handler=_cmd_sensitivity)
 
     build_cmd = sub.add_parser("build", help="этап 10: вёрстка — report.md → report.html → report.pdf")
@@ -103,6 +110,12 @@ def build_parser() -> argparse.ArgumentParser:
     check_cmd.set_defaults(handler=_cmd_check)
 
     return parser
+
+
+def local_unavailable() -> type[Exception]:
+    from .local import LocalUnavailable
+
+    return LocalUnavailable
 
 
 def _cmd_new(args: argparse.Namespace) -> int:
@@ -131,13 +144,19 @@ def _cmd_collect(args: argparse.Namespace) -> int:
 
     try:
         result = collect(client, refresh=args.refresh, probe=not args.no_probe,
-                         log=lambda message: print(message, flush=True))
+                         source=args.source, log=lambda message: print(message, flush=True))
     except RateLimited as error:
         print(f"\n{error}", file=sys.stderr)
         return 2
+    except local_unavailable() as error:
+        print(f"{error}", file=sys.stderr)
+        return 3
 
     print(f"\nполучено {len(result.fetched)}, из кэша {len(result.cached)}, "
-          f"пропусков {len(result.gaps)}")
+          f"локально {len(result.local)}, пропусков {len(result.gaps)}")
+    if args.source == "local" and result.local:
+        print("  блоки, посчитанные локально, не сверены с сайтом для этой карты — "
+              "запустите `jyotish crosscheck`, если сайт доступен")
     for gap in result.gaps:
         print(f"  ✗ {gap.key}: {gap.reason}")
 
@@ -298,6 +317,9 @@ def _cmd_crosscheck(args: argparse.Namespace) -> int:
     print(f"сверено пунктов {len(report.findings)}, расхождений {len(conflicts)}")
     for finding in conflicts:
         print(f"  ✗ {finding.subject}: {finding.site} против {finding.local}")
+    if report.verified:
+        crosscheck.write_verified(client, report)
+        print(f"локально можно считать: {', '.join(report.replaceable) or 'ничего'}")
     print(path)
     return 1 if conflicts else 0
 
@@ -313,18 +335,25 @@ def _cmd_sensitivity(args: argparse.Namespace) -> int:
 
     per_offset = len(sensitivity.build_offset_plan(vargas))
     total = per_offset * len(shifts)
+    verified = crosscheck.read_verified(client)
+    locally = args.source == "local" or (
+        args.source == "auto" and sensitivity.can_run_locally(client, vargas, verified))
     if args.plan_only:
-        print(f"{len(shifts)} смещений × {per_offset} запросов = {total}, "
-              f"~{total * client.collect.throttle / 60:.0f} мин при "
-              f"throttle={client.collect.throttle}s")
+        if locally:
+            print(f"{len(shifts)} смещений, локальный расчёт — запросов к сайту не будет")
+        else:
+            print(f"{len(shifts)} смещений × {per_offset} запросов = {total}, "
+                  f"~{total * client.collect.throttle / 60:.0f} мин при "
+                  f"throttle={client.collect.throttle}s")
         return 0
 
     print(f"{client.slug}: {client.chart.time}, окно ±{args.window} мин, "
-          f"{total} запросов (кэш в {client.root / 'sensitivity'})")
+          + ("локальный расчёт" if locally else f"{total} запросов (кэш в {client.root / 'sensitivity'})"))
     try:
         report = sensitivity.run(
             client, window=args.window, step=args.step, vargas=vargas,
-            refresh=args.refresh, log=lambda message: print(message, flush=True),
+            refresh=args.refresh, source=args.source, verified=verified,
+            log=lambda message: print(message, flush=True),
         )
     except sensitivity.NotCollected as error:
         print(f"{error}", file=sys.stderr)
@@ -332,6 +361,9 @@ def _cmd_sensitivity(args: argparse.Namespace) -> int:
     except RateLimited as error:
         print(f"\n{error}", file=sys.stderr)
         return 2
+    except local_unavailable() as error:
+        print(f"{error}", file=sys.stderr)
+        return 3
 
     md, _ = sensitivity.write(report)
     print()
