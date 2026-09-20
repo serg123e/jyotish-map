@@ -317,3 +317,14 @@ def test_stones_with_only_the_phrase_functional_malefic_fail(tmp_path: Path) -> 
     text = "Меркурий — функциональный вредитель.\n\n## Камни\n\nОсновной камень — алмаз.\n"
     results = review(_client(tmp_path), text, chart_patterns=_patterns())
     assert _by_number(results, 22).status == FAIL
+
+
+def test_an_open_gate_without_a_chapter_does_not_claim_the_stage_was_skipped(
+    tmp_path: Path,
+) -> None:
+    """The checklist sees only report.md; stage 07 may be written elsewhere."""
+    client = _client(tmp_path, status="rectified")
+    result = _by_number(review(client, "## Личность\n\nтекст\n"), 19)
+    assert result.status == PASS
+    assert "не выполнен" not in result.detail
+    assert "главы нет в тексте отчёта" in result.detail

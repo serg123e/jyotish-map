@@ -267,7 +267,10 @@ def _scale_checks(client: Client, text: str, lower: str) -> list[Result]:
             BY_NUMBER[19], PASS,
             f"главы нет; время рождения — {client.birth_time.label}"
             if not client.birth_time.confirmed
-            else "гейт открыт, но глава не написана — этап 07 ещё не выполнен",
+            # The checklist only ever sees report.md. Whether stage 07 ran is
+            # not knowable from here — the chapter may be sitting in
+            # stages/07.md, waiting to be assembled at stage 09.
+            else "гейт открыт; главы нет в тексте отчёта",
         ))
     elif client.birth_time.confirmed:
         results.append(Result(BY_NUMBER[19], PASS,
