@@ -136,6 +136,22 @@ def _normalise(name: str) -> str:
     return re.sub(r"[^a-z]", "", (name or "").lower()).replace("sh", "s").replace("v", "w")
 
 
+def _same_nakshatra(first: str, second: str) -> bool:
+    """Whether two spellings name the same nakshatra.
+
+    Beyond transliteration the sources also differ in how much of the name
+    they keep: vedic-horo writes "Uttarabhadra" where the full name is
+    "Uttara Bhadrapada". One being a prefix of the other is the same
+    nakshatra, not a disagreement — and a checker that flags matching data
+    teaches people to ignore it.
+    """
+    a, b = _normalise(first), _normalise(second)
+    if not a or not b:
+        return False
+    shorter, longer = sorted((a, b), key=len)
+    return longer.startswith(shorter) and len(shorter) >= 5
+
+
 def _site_positions(collection: dict[str, Any]) -> tuple[float | None, dict[str, dict[str, Any]]]:
     info = collection.get("show-info-D1") or {}
     other = collection.get("show-other-D1") or {}
@@ -331,7 +347,7 @@ def compare(client: Client, collection: dict[str, Any]) -> Report:
         here, there = site.get(code), local.get(code)
         if not here or not there or not here["nakshatra"] or not there["nakshatra"]:
             continue
-        same = (_normalise(here["nakshatra"]) == _normalise(there["nakshatra"])
+        same = (_same_nakshatra(here["nakshatra"], there["nakshatra"])
                 and here["pada"] == there["pada"])
         report.findings.append(Finding(
             subject=f"{code}: накшатра и пада",

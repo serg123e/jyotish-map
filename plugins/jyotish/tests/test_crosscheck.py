@@ -129,3 +129,22 @@ def test_report_never_picks_a_winner() -> None:
     """The point of the check is to surface disagreement, not resolve it."""
     text = render(Report(findings=[Finding("Айанамша", CONFLICT, "23.61", "23.84")]))
     assert "не выбирает победителя" in text
+
+
+def test_a_truncated_name_is_the_same_nakshatra() -> None:
+    """vedic-horo writes "Uttarabhadra"; the full name is "Uttara Bhadrapada"."""
+    from jyotish.crosscheck import _same_nakshatra
+
+    for a, b in (("Uttarabhadra", "Uttara Bhadrapada"),
+                 ("Uttaraphalguni", "Uttara Phalguni"),
+                 ("Satabhisha", "Shatabhisha"),
+                 ("Ashvini", "Ashwini")):
+        assert _same_nakshatra(a, b), (a, b)
+
+
+def test_different_nakshatras_are_still_different() -> None:
+    from jyotish.crosscheck import _same_nakshatra
+
+    assert not _same_nakshatra("Purvaphalguni", "Uttara Phalguni")
+    assert not _same_nakshatra("Pushya", "Ashlesha")
+    assert not _same_nakshatra("Magha", "")
