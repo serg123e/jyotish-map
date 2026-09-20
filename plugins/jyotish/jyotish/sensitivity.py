@@ -124,11 +124,26 @@ def sign_of(data: Mapping[str, Any], varga: str, body: str) -> str | None:
 
 
 def ascendant_degree(data: Mapping[str, Any]) -> float | None:
+    """Degrees within the sign, as the site prints them."""
     info = data.get("show-info-D1") or {}
     for planet in info.get("planets", []):
         if planet.get("code") == "As":
             return planet.get("degrees_decimal")
     return None
+
+
+def ascendant_longitude(data: Mapping[str, Any]) -> float | None:
+    """Sidereal longitude 0–360°, so a rate across 30° does not come out negative.
+
+    The first live run printed «−2.56° в минуту»: the ascendant went from
+    29.91° Aries to 0.34° Taurus and the difference of the printed degrees
+    was taken at face value.
+    """
+    degree = ascendant_degree(data)
+    sign = sign_of(data, "D1", "As")
+    if degree is None or sign not in SIGN_CODES:
+        return None
+    return SIGN_CODES.index(sign) * 30 + degree
 
 
 def dasha_starts(data: Mapping[str, Any]) -> dict[str, datetime]:
@@ -192,6 +207,7 @@ class Report:
     #: varga → (low, high) offsets over which every body keeps its sign.
     stable: dict[str, tuple[int, int]] = field(default_factory=dict)
     ascendant: dict[int, float | None] = field(default_factory=dict)
+    longitude: dict[int, float | None] = field(default_factory=dict)
     #: mahadasha lord → offset → start.
     dashas: dict[str, dict[int, datetime]] = field(default_factory=dict)
     #: Mean slide of the boundaries, days per minute of birth time; positive
@@ -206,6 +222,15 @@ class Report:
     def whole_window(self, varga: str) -> bool:
         low, high = self.stable.get(varga, (0, 0))
         return low == -self.window and high == self.window
+
+    def ascendant_rate(self) -> float | None:
+        """Degrees per minute across the window, from the site's own answers."""
+        known = {m: lon for m, lon in self.longitude.items() if lon is not None}
+        if len(known) < 2:
+            return None
+        first, last = min(known), max(known)
+        travelled = (known[last] - known[first]) % 360
+        return travelled / (last - first)
 
 
 def analyse(client: Client, runs: Mapping[int, Mapping[str, Any]], vargas: Sequence[str],
@@ -237,6 +262,7 @@ def analyse(client: Client, runs: Mapping[int, Mapping[str, Any]], vargas: Seque
             report.stable[varga] = (max(s[0] for s in spans), min(s[1] for s in spans))
 
     report.ascendant = {m: ascendant_degree(data) for m, data in runs.items()}
+    report.longitude = {m: ascendant_longitude(data) for m, data in runs.items()}
 
     if not base.get(DASHA_KEY):
         report.missing.append(DASHA_KEY)
@@ -344,11 +370,45 @@ def _minutes_ru(count: int) -> str:
     return counted(count, "минута", "минуты", "минут")
 
 
+def _minutes_acc(count: int) -> str:
+    """Accusative: «на 1 минуту», «на 2 минуты», «на 5 минут»."""
+    return counted(count, "минуту", "минуты", "минут")
+
+
 def _days_ru(days: float) -> str:
     """«5,5 дня», but «1 день» and «3 дня»: a fraction always takes the genitive."""
     if float(days).is_integer():
         return counted(int(days), "день", "дня", "дней")
     return f"{number(days, 1)} дня"
+
+
+def _d60_verdict(report: Report, low: int, high: int) -> str:
+    """The one sentence the whole report exists for.
+
+    The span is what was *observed* stable, at the step of the sweep: a span
+    of (0, 0) at step 1 does not mean «zero minutes», it means the sign is
+    already different one minute either way, and the true tolerance is
+    somewhere under a minute.
+    """
+    client, step = report.client, report.step
+    width = high - low
+    edges = []
+    if low > -report.window:
+        edges.append(f"{_clock(client, low - step)}")
+    if high < report.window:
+        edges.append(f"{_clock(client, high + step)}")
+    at = " и при ".join(edges)
+    if width == 0:
+        return (f"**D60 меняет знак уже при смещении на {_minutes_acc(step)}** — "
+                f"при {at} шаштьямша другая. Время должно быть известно с точностью "
+                f"лучше {counted(step, 'минуты', 'минут', 'минут')}, чтобы выводы по D60 "
+                "и Промпт 07 были "
+                "допустимы; шаг проверки этого не разрешает, а события, датированные "
+                "днём, — тем более.")
+    return (f"**D60 сохраняет знак от {_clock(client, low)} до {_clock(client, high)}** "
+            f"({_minutes_ru(width)}, смещения {low:+d}…{high:+d}); при {at} шаштьямша уже "
+            f"другая. Именно с такой точностью время должно быть известно, чтобы выводы "
+            "по D60 и Промпт 07 были допустимы.")
 
 
 def render(report: Report) -> str:
@@ -376,10 +436,10 @@ def render(report: Report) -> str:
         out += ["## Градус Лагны в D1", "", "| Смещение | Время | Лагна |", "|---|---|---|"]
         for m in cols:
             if m in degrees:
-                out.append(f"| {m:+d} | {_clock(client, m)} | {number(degrees[m], 2)}° |")
-        span = max(degrees) - min(degrees)
-        if span:
-            rate = (degrees[max(degrees)] - degrees[min(degrees)]) / span
+                sign = _sign_ru(sign_of(report.runs[m], "D1", "As"))
+                out.append(f"| {m:+d} | {_clock(client, m)} | {number(degrees[m], 2)}° {sign} |")
+        rate = report.ascendant_rate()
+        if rate:
             out += ["", f"Лагна проходит около **{number(rate, 2)}° в минуту** "
                         "(по выдачам сайта на краях окна).", ""]
 
@@ -444,12 +504,7 @@ def render(report: Report) -> str:
                 f"меняют шаштьямшу от {_clock(client, low)} до {_clock(client, high)}. "
                 "Чтобы судить о запасе за пределами окна, увеличьте его.")
         else:
-            width = high - low
-            out.append(
-                f"**D60 устойчива только от {low:+d} до {high:+d} мин** — "
-                f"от {_clock(client, low)} до {_clock(client, high)}, всего "
-                f"{_minutes_ru(width)}. Именно с такой точностью время должно быть известно, "
-                "чтобы выводы по D60 и Промпт 07 были допустимы.")
+            out.append(_d60_verdict(report, low, high))
         out.append("")
     unstable = [v for v in report.vargas if v in report.stable and not report.whole_window(v)]
     if unstable:

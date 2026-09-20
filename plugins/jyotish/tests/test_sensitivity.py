@@ -52,7 +52,8 @@ def _house(number: int, sign: str, *planets: str) -> dict:
 def fake_show_chart(session, chart, divisional="D1", **_):
     m = _minutes(chart)
     if divisional == "D1":
-        return {"houses": [_house(1, "Ar", "As", "Mo"), _house(5, "Le", "Su")]}
+        asc = "Ta" if 28.16 + 0.45 * m >= 30 else "Ar"
+        return {"houses": [_house(1, asc, "As", "Mo"), _house(5, "Le", "Su")]}
     if divisional == "D9":
         return {"houses": [_house(1, "Sg", "As"), _house(12, "Sc", "Mo"), _house(9, "Le", "Su")]}
     # D60: the ascendant crosses into Capricorn at +2, the Moon into Aries at -3.
@@ -62,7 +63,9 @@ def fake_show_chart(session, chart, divisional="D1", **_):
 
 
 def fake_show_info(session, chart, divisional="D1", **_):
-    return {"planets": [{"code": "As", "degrees_decimal": 28.16 + 0.45 * _minutes(chart)}]}
+    # 28.16° Aries at the base; +5 minutes carries it into Taurus at 0.41°.
+    longitude = 28.16 + 0.45 * _minutes(chart)
+    return {"planets": [{"code": "As", "degrees_decimal": round(longitude % 30, 2)}]}
 
 
 def fake_show_dasha(session, chart, dasha="vimshottari", level=1, **_):
@@ -170,6 +173,7 @@ def test_the_report_finds_the_d60_boundaries(client: Client) -> None:
     report = run(client, window=3)
     assert report.collected_offsets == [-3, -2, -1, 0, 1, 2, 3]
     assert report.stable["D1"] == (-3, 3) and report.whole_window("D1")
+    assert report.ascendant_rate() == pytest.approx(0.45, abs=0.01)
     assert report.stable["D9"] == (-3, 3)
     # Ascendant holds until +1, the Moon until -2: the intersection is (-2, 1).
     assert report.stable["D60"] == (-2, 1)
@@ -199,9 +203,9 @@ def test_shifted_charts_are_cached_and_reused(client: Client, monkeypatch) -> No
 
 def test_the_text_names_the_interval_in_clock_time(client: Client) -> None:
     text = render(run(client, window=3))
-    assert "D60 устойчива только от -2 до +1 мин" in text
-    assert "22:58" in text and "23:01" in text
+    assert "D60 сохраняет знак от 22:58 до 23:01" in text
     assert "3 минуты" in text
+    assert "при 22:57 и при 23:02 шаштьямша уже другая" in text
     assert "| D60 | Луна | -3 мин (22:57) | Рыбы | Овен |" in text
     assert "| D60 | Лагна | +2 мин (23:02) | Стрелец | Козерог |" in text
     assert "5.5 дня за минуту" in text and "раньше" in text
@@ -222,3 +226,31 @@ def test_write_leaves_markdown_and_json(client: Client) -> None:
     assert payload["days_per_minute"] == pytest.approx(DAYS_PER_MINUTE)
     assert {"varga": "D60", "body": "As", "minutes": 2, "from": "Sg", "to": "Cp"} \
         in payload["changes"]
+
+
+def test_the_rate_survives_the_ascendant_crossing_thirty_degrees(client: Client) -> None:
+    """29.91° Aries → 0.34° Taurus is +0.43°, not −29.6°."""
+    report = run(client, window=5)
+    assert report.longitude[5] == pytest.approx(30.41, abs=0.01)
+    assert report.ascendant_rate() == pytest.approx(0.45, abs=0.01)
+    assert "0.45° в минуту" in render(report)
+    assert "| +5 | 23:05 | 0.41° Телец |" in render(report)
+
+
+def test_a_sign_that_changes_at_one_minute_is_not_reported_as_zero_minutes(client: Client, monkeypatch) -> None:
+    """The first live run printed «устойчива от +0 до +0 мин, всего 0 минут»."""
+    def d60_every_minute(session, chart, divisional="D1", **_):
+        if divisional != "D60":
+            return fake_show_chart(session, chart, divisional)
+        signs = ["Cn", "Le", "Vi", "Li", "Sc", "Sg", "Cp", "Aq", "Pi", "Ar", "Ta"]
+        return {"houses": [_house(1, signs[_minutes(chart) + 5], "As")]}
+
+    monkeypatch.setattr(collect_module, "_load_api", lambda: {
+        "show_chart": d60_every_minute, "show_info": fake_show_info, "show_dasha": fake_show_dasha})
+    report = run(client, window=2)
+    assert report.stable["D60"] == (0, 0)
+    text = render(report)
+    assert "D60 меняет знак уже при смещении на 1 минуту" in text
+    assert "при 22:59 и при 23:01 шаштьямша другая" in text
+    assert "всего 0 минут" not in text
+    assert "с точностью лучше 1 минуты" in text

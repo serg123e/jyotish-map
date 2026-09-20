@@ -288,7 +288,13 @@ def _cmd_sensitivity(args: argparse.Namespace) -> int:
     for varga in report.vargas:
         if varga in report.stable:
             low, high = report.stable[varga]
-            print(f"  {varga}: {'устойчива во всём окне' if report.whole_window(varga) else f'{low:+d}…{high:+d} мин'}")
+            if report.whole_window(varga):
+                what = "устойчива во всём окне"
+            elif low == high == 0:
+                what = f"меняется уже при ±{args.step} мин"
+            else:
+                what = f"{low:+d}…{high:+d} мин"
+            print(f"  {varga}: {what}")
     if report.days_per_minute is not None:
         print(f"  даши: {number(abs(report.days_per_minute), 1)} дня за минуту")
     print(md)
