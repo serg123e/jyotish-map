@@ -220,3 +220,95 @@ def test_house_strength_survives_missing_bala_data() -> None:
     houses = house_strength(_chart(), _house_info(Ma=134), None)
     assert len(houses) == 12
     assert houses[0].drishti_benefic == 0 and houses[0].lord_shad_bala_rupas is None
+
+
+# ---- natures the site did not give must not be silently malefic ------------
+
+
+def _bala_with_natures(natures: dict[str, str]) -> tuple[dict, dict, dict]:
+    chart = {
+        "houses": [{"house": h, "sign": {"number": h}, "planets": []} for h in range(1, 13)],
+        "planets": [],
+    }
+    info = {
+        "planets": [
+            {"code": code, "shad_bala": 100,
+             "natural_beneficence": ({"code": nature} if nature else None)}
+            for code, nature in natures.items()
+        ],
+        "ashtakavarga": {"sav": [25] * 12},
+    }
+    bala = {
+        "shad_bala": [{"code": code, "components": {"shad_bala": {"rupas": 6.0}}}
+                      for code in natures],
+        "aspects": {"on_houses": {"rows": {code: [10] * 12 for code in natures}}},
+    }
+    return chart, info, bala
+
+
+def test_an_unknown_nature_is_not_counted_as_a_malefic() -> None:
+    """Folding it into the malefic sum shifts every house down invisibly."""
+    from jyotish.derive import house_strength
+
+    houses = house_strength(*_bala_with_natures({"Ju": "B+", "Sa": "M", "Xx": ""}))
+    first = houses[0]
+    assert first.drishti_benefic == 10
+    assert first.drishti_malefic == 10
+    assert first.drishti_unclassified == 10
+    assert first.drishti_net == 0
+
+
+def test_every_variant_of_B_and_M_lands_in_the_right_sum() -> None:
+    from jyotish.derive import house_strength
+
+    houses = house_strength(*_bala_with_natures(
+        {"a": "B", "b": "B+", "c": "B-", "d": "M", "e": "M+", "f": "M-"}))
+    assert houses[0].drishti_benefic == 30
+    assert houses[0].drishti_malefic == 30
+    assert houses[0].drishti_unclassified == 0
+
+
+# ---- the eight-karaka scheme counts Rahu backwards -------------------------
+
+
+def test_rahu_is_ranked_from_the_end_of_its_sign() -> None:
+    """Rahu always moves in reverse, so 5° of a sign is 25° of seniority.
+
+    Ranking it forwards would put the wrong planet at the top of the list —
+    and the top of the list is the Atmakaraka.
+    """
+    import jyotish.derive as derive
+
+    planets = [
+        {"code": "Su", "degrees_decimal": 6.0},
+        {"code": "Mo", "degrees_decimal": 23.0},
+        {"code": "Ma", "degrees_decimal": 4.0},
+        {"code": "Me", "degrees_decimal": 13.0},
+        {"code": "Ju", "degrees_decimal": 8.0},
+        {"code": "Ve", "degrees_decimal": 21.0},
+        {"code": "Sa", "degrees_decimal": 22.0},
+        {"code": "Ra", "degrees_decimal": 5.0},
+    ]
+    original = derive.KARAKA_PLANETS
+    derive.KARAKA_PLANETS = original + ("Ra",)
+    try:
+        check = derive.chara_karakas({"planets": planets})
+    finally:
+        derive.KARAKA_PLANETS = original
+
+    assert check.degrees["Ra"] == 25.0, "Раху считается от конца знака"
+    assert check.atmakaraka == "Ra"
+    assert check.computed["AmK"] == "Mo"
+    assert "PiK" in check.computed, "в 8-караковой схеме есть Питрикарака"
+
+
+def test_the_seven_karaka_scheme_leaves_rahu_out() -> None:
+    from jyotish.derive import chara_karakas
+
+    planets = [{"code": code, "degrees_decimal": deg} for code, deg in
+               (("Su", 6.0), ("Mo", 23.0), ("Ma", 4.0), ("Me", 13.0),
+                ("Ju", 8.0), ("Ve", 21.0), ("Sa", 29.0), ("Ra", 5.0))]
+    check = chara_karakas({"planets": planets})
+    assert "Ra" not in check.degrees
+    assert check.atmakaraka == "Sa"
+    assert "PiK" not in check.computed

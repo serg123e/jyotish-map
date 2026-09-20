@@ -242,13 +242,33 @@ def _local_positions(chart: dict[str, Any]) -> tuple[float, dict[str, dict[str, 
     return float(ayanamsa), positions, bhava
 
 
-def implied_ayanamsa(client: Client, positions: dict[str, dict[str, Any]]) -> float | None:
-    """The ayanamsa a set of sidereal positions actually implies.
+def tropical_longitudes(ephemeris: Any, moment: Any) -> dict[str, float]:
+    """True tropical longitudes of the classical bodies, **in the ecliptic of date**.
 
-    Computed as (true tropical longitude − reported sidereal longitude), averaged
-    over the classical bodies. This is what catches a source whose stated
-    ayanamsa disagrees with its own numbers — which is not hypothetical.
+    The epoch is the whole point. Skyfield's ``ecliptic_latlon()`` defaults to
+    the J2000 ecliptic, while an ayanamsa is by definition measured from the
+    equinox *of date*. Omitting the epoch therefore adds the precession
+    accumulated between the chart and J2000 — 0.2765° for a 1980 chart, 16.6′,
+    which is squarely inside the range of a real ayanamsa dispute.
+
+    That is not a hypothetical: this module was written without the epoch and
+    duly reported that vedic-horo declared an ayanamsa 16.7′ away from its own
+    positions. The site was right and the checker was wrong. A cross-check that
+    manufactures conflicts is worse than no cross-check, so the epoch is passed
+    explicitly here and asserted in the tests.
     """
+    observer = ephemeris["earth"].at(moment)
+    longitudes: dict[str, float] = {}
+    for code, key in EPHEMERIS_KEYS.items():
+        _, longitude, _ = (
+            observer.observe(ephemeris[key]).apparent().ecliptic_latlon(epoch=moment)
+        )
+        longitudes[code] = longitude.degrees
+    return longitudes
+
+
+def _ephemeris_for(client: Client) -> tuple[Any, Any] | None:
+    """Skyfield's ephemeris and the chart's moment, or None when unavailable."""
     try:
         from skyfield.api import Loader
     except ImportError:
@@ -263,19 +283,38 @@ def implied_ayanamsa(client: Client, positions: dict[str, dict[str, Any]]) -> fl
     # drops de421.bsp and hip_main.dat into whatever repository you happen to
     # be standing in.
     loader = Loader(str(_ephemeris_cache()), verbose=False)
-    timescale = loader.timescale()
     ephemeris = loader("de421.bsp")
-    moment = timescale.utc(year, month, day, hour - offset, minute, second)
+    moment = loader.timescale().utc(year, month, day, hour - offset, minute, second)
+    return ephemeris, moment
 
-    values = []
-    for code, key in EPHEMERIS_KEYS.items():
-        if code not in positions:
-            continue
-        _, longitude, _ = (
-            ephemeris["earth"].at(moment).observe(ephemeris[key]).apparent().ecliptic_latlon()
-        )
-        values.append((longitude.degrees - positions[code]["sidereal"]) % 360)
+
+def ayanamsa_from(
+    longitudes: dict[str, float], positions: dict[str, dict[str, Any]]
+) -> float | None:
+    """The ayanamsa a set of sidereal positions implies, given true longitudes.
+
+    (tropical of date − reported sidereal), averaged over the bodies both
+    sides have. Split out from the ephemeris lookup so it can be tested
+    without downloading 68 MB.
+    """
+    values = [
+        (longitudes[code] - positions[code]["sidereal"]) % 360
+        for code in longitudes
+        if code in positions
+    ]
     return sum(values) / len(values) if values else None
+
+
+def implied_ayanamsa(client: Client, positions: dict[str, dict[str, Any]]) -> float | None:
+    """The ayanamsa a set of sidereal positions actually implies.
+
+    This is what would catch a source whose stated ayanamsa disagrees with its
+    own numbers.
+    """
+    loaded = _ephemeris_for(client)
+    if loaded is None:
+        return None
+    return ayanamsa_from(tropical_longitudes(*loaded), positions)
 
 
 # ---------------------------------------------------------------------------
@@ -311,10 +350,14 @@ def compare(client: Client, collection: dict[str, Any]) -> Report:
                  + ("" if here["sign"] == there["sign"] else "; **знаки разные**"),
         ))
 
-    report.implied_ayanamsa = implied_ayanamsa(client, site)
+    # One ephemeris load for both sources: opening de421.bsp and observing
+    # seven bodies three times over gives the same answer three times slower.
+    loaded = _ephemeris_for(client)
+    true_longitudes = tropical_longitudes(*loaded) if loaded else {}
+    report.implied_ayanamsa = ayanamsa_from(true_longitudes, site)
     for label, declared, positions in (("vedic-horo", site_ayanamsa, site),
                                        ("jyotishganit", local_ayanamsa, local)):
-        actual = implied_ayanamsa(client, positions)
+        actual = ayanamsa_from(true_longitudes, positions)
         if declared is None or actual is None:
             continue
         drift = abs(actual - declared) * 60

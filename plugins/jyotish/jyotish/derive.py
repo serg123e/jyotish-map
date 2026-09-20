@@ -233,7 +233,12 @@ def chara_karakas(show_info: dict[str, Any], *, tie_threshold: float = 0.05) -> 
     for planet in show_info.get("planets", []):
         code = planet.get("code")
         if code in KARAKA_PLANETS and planet.get("degrees_decimal") is not None:
-            check.degrees[code] = planet["degrees_decimal"] % 30
+            in_sign = planet["degrees_decimal"] % 30
+            # Rahu only enters in the eight-karaka scheme, and there its degree
+            # is counted from the end of the sign, because it always moves in
+            # reverse. Ranking it forwards would quietly put the wrong planet
+            # at the top — and the top one is the Atmakaraka.
+            check.degrees[code] = 30 - in_sign if code == "Ra" else in_sign
         if code and planet.get("karaka"):
             check.reported[planet["karaka"]] = code
 
@@ -297,6 +302,11 @@ class HouseStrength:
     lord_shad_bala_rupas: float | None
     drishti_benefic: float
     drishti_malefic: float
+    #: Virupas from a planet whose natural beneficence the site did not give as
+    #: B… or M…. Kept apart rather than folded into one of the two: a planet of
+    #: unknown nature counted as malefic silently biases every house downwards,
+    #: and the bias is invisible in the result.
+    drishti_unclassified: float = 0.0
 
     @property
     def drishti_net(self) -> float:
@@ -339,15 +349,18 @@ def house_strength(
     for house in range(1, 13):
         sign = house_signs[house]
         lord = SIGN_LORDS[sign]
-        benefic = malefic = 0.0
+        benefic = malefic = unknown = 0.0
         for planet, row in on_houses.items():
             value = row[house - 1] if len(row) >= house else None
             if not isinstance(value, (int, float)):
                 continue  # "+" is the planet's own house, "-" the adjacent ones
-            if nature.get(planet, "").startswith("B"):
+            code = nature.get(planet) or ""
+            if code.startswith("B"):
                 benefic += value
-            else:
+            elif code.startswith("M"):
                 malefic += value
+            else:
+                unknown += value
         result.append(HouseStrength(
             house=house,
             sign=sign,
@@ -358,6 +371,7 @@ def house_strength(
             lord_shad_bala_rupas=rupas.get(lord),
             drishti_benefic=benefic,
             drishti_malefic=malefic,
+            drishti_unclassified=unknown,
         ))
     return result
 
@@ -381,6 +395,7 @@ def derive_all(
                 "lord_shad_bala_rupas": h.lord_shad_bala_rupas,
                 "drishti_benefic": h.drishti_benefic,
                 "drishti_malefic": h.drishti_malefic,
+                "drishti_unclassified": h.drishti_unclassified,
                 "drishti_net": h.drishti_net,
             }
             for h in houses

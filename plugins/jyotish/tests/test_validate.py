@@ -288,3 +288,32 @@ def test_a_pipe_in_a_detail_does_not_add_a_column() -> None:
     row = next(line for line in text.splitlines() if line.startswith("| 19 "))
     assert row.count("|") - row.count(r"\|") == 6   # шесть границ ячеек, и ни одной лишней
     assert r"а \| б" in row
+
+
+def test_the_phrase_functional_malefic_is_not_a_roles_table(tmp_path: Path) -> None:
+    """«функциональный вредитель» appears in any reading — it proves nothing.
+
+    Matching the bare word made check 22 pass no matter where the table was,
+    which is the same vacuous match that was already fixed on the stones side.
+    """
+    from jyotish.validate import _roles_table_at
+
+    assert _roles_table_at("меркурий здесь функциональный вредитель.") == -1
+    assert _roles_table_at("| планета | функциональная роль |\n") == 0
+    assert _roles_table_at("сначала таблица функциональных ролей") == 8
+
+
+def test_stones_after_a_real_roles_table_pass(tmp_path: Path) -> None:
+    text = (
+        "## Функции планет\n\n"
+        "| Планета | Функциональная роль |\n|---|---|\n| Ve | йогакарака |\n\n"
+        "## Камни\n\nОсновной камень — алмаз.\n"
+    )
+    results = review(_client(tmp_path), text, chart_patterns=_patterns())
+    assert _by_number(results, 22).status == PASS
+
+
+def test_stones_with_only_the_phrase_functional_malefic_fail(tmp_path: Path) -> None:
+    text = "Меркурий — функциональный вредитель.\n\n## Камни\n\nОсновной камень — алмаз.\n"
+    results = review(_client(tmp_path), text, chart_patterns=_patterns())
+    assert _by_number(results, 22).status == FAIL

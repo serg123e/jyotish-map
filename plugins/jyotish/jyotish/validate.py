@@ -348,7 +348,7 @@ def _text_checks(
     # Matched against an actual recommendation, not the word "камни" — the
     # chapter heading always precedes the table that lives inside it, so a
     # bare word search would fail every correctly-ordered report.
-    roles_at = lower.find("функциональн")
+    roles_at = _roles_table_at(lower)
     stones_at = min(
         (position for position in
          (lower.find(marker) for marker in STONE_ASSIGNMENT) if position >= 0),
@@ -386,6 +386,24 @@ def _text_checks(
         f"доля терминов {share:.1f}% от {total} слов (порог 20%)",
     ))
     return results
+
+
+#: What actually marks the table of functional roles, as opposed to the phrase
+#: «функциональный вредитель», which any reading uses in passing. The bare word
+#: made check 22 pass wherever the table really was — the same vacuous match
+#: that was fixed on the stones side and left standing on this one.
+ROLES_TABLE = (
+    r"^\|[^\n]*функциональн",        # строка Markdown-таблицы
+    r"табли\w+ функциональн",         # прямое указание на таблицу
+    r"функциональн\w+ рол\w+ планет",
+)
+
+
+def _roles_table_at(lower: str) -> int:
+    """Where the table of functional roles starts, or -1 if there is none."""
+    found = [match.start() for pattern in ROLES_TABLE
+             if (match := re.search(pattern, lower, flags=re.MULTILINE))]
+    return min(found) if found else -1
 
 
 def terminology_share(text: str) -> tuple[float, int]:

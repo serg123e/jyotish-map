@@ -21,7 +21,7 @@ from jyotish.collect import (
     build_plan,
     collect,
 )
-from vedic_parser.session import AccessDenied
+from vedic_parser.session import AccessDenied, VedicHoroError
 
 CHART = {
     "slug": "t", "name": "T", "date": "07.08.1983", "time": "23:00:00",
@@ -169,3 +169,43 @@ def test_cache_from_another_birth_time_is_refused(tmp_path: Path, monkeypatch) -
     # …and --refresh is the documented way through.
     collect(rectified, plan=[Request("show-info", {"divisional": "D1"})],
             refresh=True, probe=False)
+
+
+# ---- --refresh must not leave the previous chart's answer behind -----------
+
+
+def test_refresh_deletes_the_old_answer_before_asking_again(client: Client, monkeypatch) -> None:
+    """A failed re-fetch must leave no file, or the stale numbers look current.
+
+    Every later command (`status`, `check`, `crosscheck`, re-render) reads the
+    cache and has no way to tell that one file belongs to the birth time from
+    before the rectification.
+    """
+    client.ensure_dirs()
+    stale = client.raw_dir / "show-info-D1.json"
+    stale.write_text('{"planets": [{"code": "Su", "stale": true}]}', encoding="utf-8")
+
+    def always_fails(func, session, chart, params):
+        raise VedicHoroError("сайт не ответил")
+
+    monkeypatch.setattr(collect_module, "_call", always_fails)
+    monkeypatch.setattr(collect_module, "_ensure_session",
+                        lambda client, session, last: (object(), 0.0))
+    _stub_api(monkeypatch, show_info=_never_called)
+
+    plan = [Request("show-info", {"divisional": "D1"})]
+    result = collect_module.collect(client, plan=plan, refresh=True, probe=False)
+
+    assert not stale.exists(), "устаревший ответ остался на диске"
+    assert "show-info-D1" not in result.data
+    assert [gap.key for gap in result.gaps] == ["show-info-D1"]
+    assert collect_module.from_cache(client, plan=plan).data == {}
+
+
+def test_a_dasha_level_of_one_is_not_planned_twice(client: Client) -> None:
+    """(1, settings.dasha_level) queued the same key twice when the level was 1."""
+    from dataclasses import replace
+
+    shallow = replace(client, collect=replace(client.collect, dasha_level=1))
+    keys = [request.key for request in build_plan(shallow)]
+    assert len(keys) == len(set(keys)), sorted(k for k in keys if keys.count(k) > 1)

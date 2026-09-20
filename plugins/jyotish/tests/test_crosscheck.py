@@ -148,3 +148,114 @@ def test_different_nakshatras_are_still_different() -> None:
     assert not _same_nakshatra("Purvaphalguni", "Uttara Phalguni")
     assert not _same_nakshatra("Pushya", "Ashlesha")
     assert not _same_nakshatra("Magha", "")
+
+
+# ---- the ayanamsa is measured from the equinox OF DATE ----------------------
+
+#: Precession between a 1980 chart and J2000 — the size of the bug guarded here.
+PRECESSION = 0.2765
+
+#: True tropical longitude of date, per skyfield key.
+OF_DATE = {"sun": 30.0, "moon": 60.0, "mars barycenter": 90.0,
+           "mercury barycenter": 120.0, "jupiter barycenter": 150.0,
+           "venus barycenter": 180.0, "saturn barycenter": 210.0}
+
+
+class _FakeEphemeris:
+    """Just enough of skyfield to see which ecliptic the code asks for.
+
+    A body's J2000 longitude is its of-date longitude plus the precession
+    since then, exactly as the real sky behaves for a chart before 2000.
+    """
+
+    def __init__(self) -> None:
+        self.epochs: list = []
+
+    def __getitem__(self, key):
+        return _Earth(self) if key == "earth" else key
+
+    # skyfield spells it ephemeris["earth"].at(t).observe(body).apparent()
+
+
+class _Earth:
+    def __init__(self, ephemeris: _FakeEphemeris) -> None:
+        self.ephemeris = ephemeris
+
+    def at(self, moment):
+        return _Observer(self.ephemeris)
+
+
+class _Observer:
+    def __init__(self, ephemeris: _FakeEphemeris) -> None:
+        self.ephemeris = ephemeris
+
+    def observe(self, key):
+        return _Observation(self.ephemeris, key)
+
+
+class _Observation:
+    def __init__(self, ephemeris: _FakeEphemeris, key: str) -> None:
+        self.ephemeris, self.key = ephemeris, key
+
+    def apparent(self):
+        return self
+
+    def ecliptic_latlon(self, epoch=None):
+        self.ephemeris.epochs.append(epoch)
+        degrees = OF_DATE[self.key] + (PRECESSION if epoch is None else 0.0)
+        return None, _Longitude(degrees), None
+
+
+class _Longitude:
+    def __init__(self, degrees: float) -> None:
+        self.degrees = degrees
+
+
+def test_tropical_longitudes_ask_for_the_ecliptic_of_date() -> None:
+    """Without an epoch skyfield answers in J2000 — 16.6′ off for a 1980 chart.
+
+    That omission once made this module accuse vedic-horo of declaring an
+    ayanamsa 16.7′ away from its own positions. The site was right.
+    """
+    from jyotish.crosscheck import tropical_longitudes
+
+    ephemeris = _FakeEphemeris()
+    moment = object()
+    longitudes = tropical_longitudes(ephemeris, moment)
+
+    assert ephemeris.epochs, "ecliptic_latlon не вызывался"
+    assert all(epoch is moment for epoch in ephemeris.epochs), (
+        "эклиптика должна браться на дату карты, а не на J2000"
+    )
+    assert longitudes["Su"] == pytest.approx(30.0)
+    assert set(longitudes) == set(CLASSICAL_CODES)
+
+
+CLASSICAL_CODES = ("Su", "Mo", "Ma", "Me", "Ju", "Ve", "Sa")
+
+
+def test_the_missing_epoch_would_shift_the_answer_by_the_precession() -> None:
+    """The guard above is worth having only if the mistake actually moves the number."""
+    from jyotish.crosscheck import ayanamsa_from, tropical_longitudes
+
+    positions = {code: {"sidereal": OF_DATE[key] - 23.5679}
+                 for code, key in zip(CLASSICAL_CODES, OF_DATE)}
+    correct = ayanamsa_from(tropical_longitudes(_FakeEphemeris(), object()), positions)
+    assert correct == pytest.approx(23.5679, abs=1e-6)
+    assert (correct + PRECESSION - 23.5679) * 60 == pytest.approx(16.6, abs=0.1)
+
+
+def test_implied_ayanamsa_is_the_mean_offset_from_the_sidereal_positions() -> None:
+    from jyotish.crosscheck import ayanamsa_from
+
+    assert ayanamsa_from({"Su": 30.0, "Mo": 60.0},
+                         {"Su": {"sidereal": 6.4}, "Mo": {"sidereal": 36.4}}) \
+        == pytest.approx(23.6)
+
+
+def test_a_body_only_one_side_has_is_skipped_not_counted_as_zero() -> None:
+    from jyotish.crosscheck import ayanamsa_from
+
+    longitudes = {"Su": 30.0, "Mo": 60.0}
+    assert ayanamsa_from(longitudes, {"Su": {"sidereal": 6.4}}) == pytest.approx(23.6)
+    assert ayanamsa_from(longitudes, {}) is None

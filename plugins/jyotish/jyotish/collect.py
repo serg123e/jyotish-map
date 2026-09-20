@@ -168,7 +168,9 @@ def build_plan(client: Client) -> list[Request]:
 
     # Vimshottari in full to antardasha; deeper levels only around today,
     # which is the stretch Prompt 05 actually reads.
-    for level in (1, settings.dasha_level):
+    # dict.fromkeys and not a set: the order of the plan is part of its meaning,
+    # and dasha_level = 1 would otherwise queue level 1 twice under one key.
+    for level in dict.fromkeys((1, settings.dasha_level)):
         plan.append(Request("show-dasha", {"dasha": "vimshottari", "level": level}))
     for level in (3, 4):
         plan.append(Request("show-dasha", {"dasha": "vimshottari", "level": level},
@@ -243,10 +245,17 @@ def collect(
 
     for request in planned:
         cache_path = client.raw_dir / f"{request.key}.json"
-        if cache_path.exists() and not refresh:
-            result.data[request.key] = json.loads(cache_path.read_text(encoding="utf-8"))
-            result.cached.append(request.key)
-            continue
+        if cache_path.exists():
+            if not refresh:
+                result.data[request.key] = json.loads(cache_path.read_text(encoding="utf-8"))
+                result.cached.append(request.key)
+                continue
+            # --refresh means the old answer is void — most often because the
+            # birth time was rectified. Delete it before asking again: if this
+            # request then fails (403, 500, network), leaving the file would
+            # hand the previous chart's numbers to every later command, which
+            # reads the cache and has no way to know they are stale.
+            cache_path.unlink()
 
         func = api.get(API_NAMES.get(request.action, ""))
         section = SECTIONS.get(request.action, "")
@@ -396,7 +405,7 @@ def _probe_html(
     html_dir.mkdir(parents=True, exist_ok=True)
     path = html_dir / f"{request.key}.html"
     if path.exists():
-        return path
+        return path  # снимок HTML привязан к тем же параметрам, что и кэш JSON
     params = {
         key: str(value)
         for key, value in request.params.items()
