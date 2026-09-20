@@ -8,6 +8,7 @@
     jyotish crosscheck clients/ivan  # recompute locally and report every disagreement
     jyotish sensitivity clients/ivan # re-collect at ±N minutes: which vargas survive
     jyotish check clients/ivan       # stage 10: the checklist, as far as code can take it
+    jyotish build clients/ivan       # stage 10: typeset report.md into report.html and report.pdf
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from typing import Sequence
 
 from vedic_parser.session import VedicHoroError
 
-from . import crosscheck, patterns, progress, render_raw, sensitivity, soul_path, validate
+from . import crosscheck, patterns, progress, render_raw, report, sensitivity, soul_path, validate
 from .client import Client, ConfigError, scaffold
 from .collect import RateLimited, build_plan, collect, from_cache
 from .derive import derive_all
@@ -89,6 +90,11 @@ def build_parser() -> argparse.ArgumentParser:
     sens_cmd.add_argument("--plan-only", action="store_true",
                           help="показать число запросов и выйти")
     sens_cmd.set_defaults(handler=_cmd_sensitivity)
+
+    build_cmd = sub.add_parser("build", help="этап 10: вёрстка — report.md → report.html → report.pdf")
+    build_cmd.add_argument("client")
+    build_cmd.add_argument("--no-pdf", action="store_true", help="только HTML, без печати")
+    build_cmd.set_defaults(handler=_cmd_build)
 
     check_cmd = sub.add_parser("check", help="этап 10: чек-лист качества")
     check_cmd.add_argument("client")
@@ -342,6 +348,17 @@ def _cmd_sensitivity(args: argparse.Namespace) -> int:
     if report.days_per_minute is not None:
         print(f"  даши: {number(abs(report.days_per_minute), 1)} дня за минуту")
     print(md)
+    return 0
+
+
+def _cmd_build(args: argparse.Namespace) -> int:
+    client = Client.load(args.client)
+    try:
+        made = report.main(client.root, pdf=not args.no_pdf)
+    except report.BuildError as error:
+        print(f"{error}", file=sys.stderr)
+        return 1
+    print(made)
     return 0
 
 
