@@ -211,6 +211,76 @@ def _karaka_checks(derived: dict[str, Any] | None) -> list[Result]:
     return [Result(BY_NUMBER[6], PASS, detail)]
 
 
+#: Where a finished stage-07 chapter can live before the report is assembled.
+#: The gate check must see these: a chapter computed with an unverified birth
+#: time is a violation whether or not anyone has pasted it into report.md yet.
+def soul_path_artifacts(client: Client) -> list[Path]:
+    """Files that exist only if stage 07 was actually run."""
+    return [path for path in (client.stages_dir / "07.md",
+                              client.root / "soul_path.json") if path.exists()]
+
+
+def _number(cell: str) -> float | None:
+    match = re.search(r"-?\d+(?:[.,]\d+)?", cell.replace("\u00a0", " "))
+    return float(match.group().replace(",", ".")) if match else None
+
+
+def soul_path_arithmetic(body: str) -> tuple[str, list[str]]:
+    """Check that the published layer table adds up to the published number.
+
+    Prompt 07's case for showing the table is that "непроверяемая цифра хуже
+    отсутствия цифры" — but nothing was verifying it. In CLI mode the number
+    and the table are the same computation and cannot disagree; in the manual
+    mode the skill offers to agents without a shell, the chapter is written by
+    hand and they can.
+
+    Returns a verdict — "сошлось", "не сошлось" or "не разобрано" — and the
+    complaints. Parsing is deliberately conservative: an unfamiliar table shape
+    is reported as unparsed rather than failed, because a false alarm here
+    teaches people to ignore the checklist.
+    """
+    weights: list[float] = []
+    contributions: list[float] = []
+    stated_total: float | None = None
+    complaints: list[str] = []
+
+    for line in body.splitlines():
+        if not line.lstrip().startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        percent = next((i for i, c in enumerate(cells) if re.fullmatch(r"\*{0,2}\d+(?:[.,]\d+)?\s*%\*{0,2}", c)), None)
+        if percent is None or percent + 2 >= len(cells):
+            continue
+        weight = _number(cells[percent])
+        score = _number(cells[percent + 1])
+        contribution = _number(cells[percent + 2])
+        if weight is None or contribution is None:
+            continue
+        if score is None:                      # строка «Итого»: балла нет
+            stated_total = contribution
+            if abs(weight - 100) > 0.01:
+                complaints.append(f"сумма весов {weight:g}%, а должна быть 100%")
+            continue
+        weights.append(weight)
+        contributions.append(contribution)
+        expected = weight * score / 100
+        if abs(contribution - expected) > 0.051:
+            complaints.append(
+                f"вклад {contribution:g} при весе {weight:g}% и балле {score:g} — "
+                f"должно быть {expected:.1f}"
+            )
+
+    if len(contributions) < 3:
+        return "не разобрано", []
+    if abs(sum(weights) - 100) > 0.01 and stated_total is None:
+        complaints.append(f"сумма весов {sum(weights):g}%, а должна быть 100%")
+    if stated_total is not None and abs(stated_total - sum(contributions)) > 0.051:
+        complaints.append(
+            f"итог {stated_total:g} не равен сумме вкладов {sum(contributions):.1f}"
+        )
+    return ("не сошлось" if complaints else "сошлось"), complaints
+
+
 def _scale_checks(client: Client, text: str, lower: str) -> list[Result]:
     """The three scales, and the chapter the third one is confined to."""
     results: list[Result] = []
@@ -225,6 +295,16 @@ def _scale_checks(client: Client, text: str, lower: str) -> list[Result]:
         f"опора выражена в процентах: {as_percent[:3]}" if as_percent
         else "опора нигде не выражена в процентах",
     ))
+
+    # The chapter may not be in the report yet — stage 09 assembles it. Check
+    # it wherever it actually is, and say where that was.
+    stage_07 = client.stages_dir / "07.md"
+    where = "в отчёте"
+    if soul_chapter is None and stage_07.exists():
+        staged = _find_chapter(_chapters(stage_07.read_text(encoding="utf-8")),
+                               ("пут", "душ"))
+        if staged:
+            soul_chapter, where = staged, "в stages/07.md, в отчёт ещё не собрано"
 
     # 16: the soul-path scale belongs to its own chapter only.
     if soul_chapter is None:
@@ -246,12 +326,27 @@ def _scale_checks(client: Client, text: str, lower: str) -> list[Result]:
         ))
 
         has_table = bool(re.search(r"\|\s*слой\s*\|", body.lower())) and "вклад" in body.lower()
-        results.append(Result(
-            BY_NUMBER[17],
-            PASS if has_table else FAIL,
-            "таблица слоёв с весами и вкладами на месте" if has_table
-            else "нет таблицы слоёв: число без неё недопустимо",
-        ))
+        verdict, complaints = soul_path_arithmetic(body)
+        if not has_table:
+            results.append(Result(BY_NUMBER[17], FAIL,
+                                  "нет таблицы слоёв: число без неё недопустимо"))
+        elif verdict == "не сошлось":
+            results.append(Result(
+                BY_NUMBER[17], FAIL,
+                "таблица слоёв есть, но не сходится: " + "; ".join(complaints)
+                + ". Непроверяемая цифра хуже отсутствия цифры",
+            ))
+        elif verdict == "не разобрано":
+            results.append(Result(
+                BY_NUMBER[17], WARN,
+                f"таблица слоёв на месте ({where}), но её арифметику разобрать "
+                "не удалось — проверьте вручную, что вклады дают итог",
+            ))
+        else:
+            results.append(Result(
+                BY_NUMBER[17], PASS,
+                f"таблица слоёв на месте ({where}), вклады сходятся с итогом",
+            ))
 
         has_caveat = ("0%" in body and "плохой человек" in body.lower()) or DISCLAIMER in body
         results.append(Result(
@@ -261,25 +356,31 @@ def _scale_checks(client: Client, text: str, lower: str) -> list[Result]:
             else "нет обязательной оговорки «0% не означает „плохой человек“»",
         ))
 
-    # 19: the admission rule — the chapter may exist only if the gate is open.
-    if soul_chapter is None:
+    # 19: the admission rule — stage 07 may have been run only if the gate is
+    # open. Looking at report.md alone let a violation sit on disk and still
+    # report "прошло": the chapter and the computed JSON are written long
+    # before the report exists.
+    artifacts = soul_path_artifacts(client)
+    done = soul_chapter is not None or bool(artifacts)
+    if client.birth_time.confirmed:
         results.append(Result(
             BY_NUMBER[19], PASS,
-            f"главы нет; время рождения — {client.birth_time.label}"
-            if not client.birth_time.confirmed
-            # The checklist only ever sees report.md. Whether stage 07 ran is
-            # not knowable from here — the chapter may be sitting in
-            # stages/07.md, waiting to be assembled at stage 09.
-            else "гейт открыт; главы нет в тексте отчёта",
+            f"время рождения: {client.birth_time.short}" if done
+            else "гейт открыт, этап 07 ещё не запускался",
         ))
-    elif client.birth_time.confirmed:
-        results.append(Result(BY_NUMBER[19], PASS,
-                              f"время рождения: {client.birth_time.label}"))
-    else:
+    elif done:
+        found = ", ".join(str(path.relative_to(client.root)) for path in artifacts) \
+            or "глава в отчёте"
         results.append(Result(
             BY_NUMBER[19], FAIL,
-            f"глава о пути души написана, но время рождения — {client.birth_time.label}. "
-            "Промпт 07 при таком статусе не выполняется вовсе.",
+            f"этап 07 выполнен ({found}), но время рождения — "
+            f"{client.birth_time.short}. Промпт 07 при таком статусе не "
+            "выполняется вовсе — результат надо убрать, а не публиковать.",
+        ))
+    else:
+        results.append(Result(
+            BY_NUMBER[19], PASS,
+            f"этап 07 не выполнялся; время рождения — {client.birth_time.short}",
         ))
     return results
 

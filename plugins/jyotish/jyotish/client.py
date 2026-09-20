@@ -89,6 +89,23 @@ class BirthTime:
         text = BIRTH_TIME_STATUSES[self.status]
         return f"{text} — {self.note}" if self.note else text
 
+    @property
+    def short(self) -> str:
+        """The status plus the first sentence of the note, for a table cell.
+
+        ``label`` carries the whole note, which is the right thing in prose and
+        the wrong thing in a checklist row: the note is a YAML block that can
+        run to a dozen lines, and it made one cell longer than the rest of the
+        table put together. The full text lives in chart.yaml.
+        """
+        text = BIRTH_TIME_STATUSES[self.status]
+        first = " ".join(self.note.split()).split(". ")[0].rstrip(".")
+        if not first:
+            return text
+        if len(first) > 120:
+            first = first[:117].rstrip() + "…"
+        return f"{text} — {first}"
+
 
 @dataclass(frozen=True)
 class CollectSettings:

@@ -319,12 +319,159 @@ def test_stones_with_only_the_phrase_functional_malefic_fail(tmp_path: Path) -> 
     assert _by_number(results, 22).status == FAIL
 
 
-def test_an_open_gate_without_a_chapter_does_not_claim_the_stage_was_skipped(
-    tmp_path: Path,
-) -> None:
-    """The checklist sees only report.md; stage 07 may be written elsewhere."""
-    client = _client(tmp_path, status="rectified")
+# ---- the admission gate must see what is on disk, not only report.md -------
+
+
+COMPUTED_CHAPTER = """## Пройденность пути души
+
+**64.8%**
+
+> 0% не означает «плохой человек», 100% не означает «лучшая душа».
+
+| Слой | Что оценивается | Вес | Балл | Вклад |
+|---|---|---|---|---|
+| D1 | достоинства | 20% | 60 | 12 |
+| D9 | подтверждение | 20% | 74 | 14.8 |
+| D60 | глубина | 30% | 56 | 16.8 |
+| АК | состояние | 10% | 68 | 6.8 |
+| Йоги | выполненные | 10% | 62 | 6.2 |
+| D20 | практика | 10% | 82 | 8.2 |
+| **Итого** |  | 100% |  | **64.8** |
+"""
+
+
+def test_a_closed_gate_with_the_chapter_only_on_disk_still_fails(tmp_path: Path) -> None:
+    """The violation is the computation, not its appearance in the report.
+
+    Looking at report.md alone let a chapter computed on an unverified birth
+    time sit in stages/07.md while the checklist reported «прошло».
+    """
+    client = _client(tmp_path, status="unverified")
+    (client.stages_dir / "07.md").write_text(COMPUTED_CHAPTER, encoding="utf-8")
+    result = _by_number(review(client, "## Личность\n\nтекст\n"), 19)
+    assert result.status == FAIL
+    assert "stages/07.md" in result.detail
+
+
+def test_a_closed_gate_with_only_the_computed_json_also_fails(tmp_path: Path) -> None:
+    client = _client(tmp_path, status="relatives")
+    (client.root / "soul_path.json").write_text('{"total": 64.8}', encoding="utf-8")
+    result = _by_number(review(client, "## Личность\n\nтекст\n"), 19)
+    assert result.status == FAIL
+    assert "soul_path.json" in result.detail
+
+
+def test_a_closed_gate_with_nothing_computed_passes(tmp_path: Path) -> None:
+    client = _client(tmp_path, status="unverified")
     result = _by_number(review(client, "## Личность\n\nтекст\n"), 19)
     assert result.status == PASS
-    assert "не выполнен" not in result.detail
-    assert "главы нет в тексте отчёта" in result.detail
+    assert "не выполнялся" in result.detail
+
+
+def test_an_open_gate_reports_whether_the_stage_ran(tmp_path: Path) -> None:
+    client = _client(tmp_path, status="rectified")
+    assert "ещё не запускался" in _by_number(review(client, "## Личность\n\nт\n"), 19).detail
+    (client.stages_dir / "07.md").write_text(COMPUTED_CHAPTER, encoding="utf-8")
+    assert _by_number(review(client, "## Личность\n\nт\n"), 19).status == PASS
+
+
+def test_the_chapter_is_checked_where_it_actually_lives(tmp_path: Path) -> None:
+    """Stage 09 assembles the report; before that the chapter is in stages/."""
+    client = _client(tmp_path, status="rectified")
+    (client.stages_dir / "07.md").write_text(COMPUTED_CHAPTER, encoding="utf-8")
+    results = review(client, "## Личность\n\nтекст\n")
+    assert _by_number(results, 17).status == PASS
+    assert "stages/07.md" in _by_number(results, 17).detail
+    assert _by_number(results, 18).status == PASS
+
+
+# ---- the published number must equal its own table -------------------------
+
+
+def test_a_table_that_adds_up_passes() -> None:
+    from jyotish.validate import soul_path_arithmetic
+
+    verdict, complaints = soul_path_arithmetic(COMPUTED_CHAPTER)
+    assert verdict == "сошлось", complaints
+
+
+def test_a_wrong_contribution_is_caught() -> None:
+    from jyotish.validate import soul_path_arithmetic
+
+    broken = COMPUTED_CHAPTER.replace("| D60 | глубина | 30% | 56 | 16.8 |",
+                                  "| D60 | глубина | 30% | 56 | 24.0 |")
+    verdict, complaints = soul_path_arithmetic(broken)
+    assert verdict == "не сошлось"
+    assert any("должно быть 16.8" in c for c in complaints)
+
+
+def test_a_headline_that_does_not_match_the_table_is_caught() -> None:
+    """The one thing Prompt 07 exists to prevent: an unverifiable figure."""
+    from jyotish.validate import soul_path_arithmetic
+
+    broken = COMPUTED_CHAPTER.replace("| **Итого** |  | 100% |  | **64.8** |",
+                                  "| **Итого** |  | 100% |  | **78.0** |")
+    verdict, complaints = soul_path_arithmetic(broken)
+    assert verdict == "не сошлось"
+    assert any("не равен сумме вкладов" in c for c in complaints)
+
+
+def test_weights_that_do_not_sum_to_a_hundred_are_caught() -> None:
+    from jyotish.validate import soul_path_arithmetic
+
+    broken = COMPUTED_CHAPTER.replace("| **Итого** |  | 100% |  | **64.8** |",
+                                  "| **Итого** |  | 90% |  | **64.8** |")
+    _, complaints = soul_path_arithmetic(broken)
+    assert any("сумма весов" in c for c in complaints)
+
+
+def test_a_decimal_comma_is_understood() -> None:
+    """A hand-written chapter in Russian writes 64,8 rather than 64.8."""
+    from jyotish.validate import soul_path_arithmetic
+
+    verdict, _ = soul_path_arithmetic(COMPUTED_CHAPTER.replace(".", ","))
+    assert verdict == "сошлось"
+
+
+def test_an_unfamiliar_table_is_not_failed_but_flagged(tmp_path: Path) -> None:
+    """A false alarm teaches people to ignore the checklist."""
+    from jyotish.validate import soul_path_arithmetic
+
+    verdict, complaints = soul_path_arithmetic(
+        "## Пройденность\n\n| Слой | Вклад |\n|---|---|\n| D1 | много |\n")
+    assert verdict == "не разобрано"
+    assert complaints == []
+
+
+def test_an_unparsed_table_warns_rather_than_passes(tmp_path: Path) -> None:
+    client = _client(tmp_path, status="rectified")
+    (client.stages_dir / "07.md").write_text(
+        "## Пройденность пути души\n\n**64.8%**\n\n"
+        "> 0% не означает «плохой человек»\n\n"
+        "| Слой | Вклад |\n|---|---|\n| D1 | много |\n", encoding="utf-8")
+    result = _by_number(review(client, "## Личность\n\nт\n"), 17)
+    assert result.status == WARN
+    assert "разобрать" in result.detail
+
+
+def test_a_broken_table_fails_check_seventeen(tmp_path: Path) -> None:
+    """Wiring, not arithmetic: the verdict has to reach the checklist item."""
+    client = _client(tmp_path, status="rectified")
+    (client.stages_dir / "07.md").write_text(
+        COMPUTED_CHAPTER.replace("| **Итого** |  | 100% |  | **64.8** |",
+                                 "| **Итого** |  | 100% |  | **78.0** |"),
+        encoding="utf-8")
+    result = _by_number(review(client, "## Личность\n\nтекст\n"), 17)
+    assert result.status == FAIL
+    assert "не сходится" in result.detail
+
+
+def test_a_long_birth_time_note_does_not_swallow_the_table(tmp_path: Path) -> None:
+    """chart.yaml notes are YAML blocks; a checklist cell is one line."""
+    from jyotish.client import BirthTime
+
+    birth = BirthTime(status="rectified", note=(
+        "Ректифицировано астрологом отдельно. " + "Подробность. " * 40))
+    assert len(birth.short) < 200
+    assert len(birth.label) > 400
+    assert birth.short.startswith("ректифицировано — Ректифицировано астрологом")
