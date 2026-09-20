@@ -186,8 +186,16 @@ def _place(position: dict[str, Any]) -> str:
 
 
 def _normalise(name: str) -> str:
-    """Nakshatra names differ only in transliteration between the sources."""
-    return re.sub(r"[^a-z]", "", (name or "").lower()).replace("sh", "s").replace("v", "w")
+    """Nakshatra names differ only in transliteration between the sources.
+
+    Doubled letters collapse because the sources disagree about the space in
+    compound names, and dropping it doubles a vowel: vedic-horo's
+    "Uttarashadha" against jyotishganit's "Uttara Ashadha". «oo» folds to
+    «u» first, since it is the long u of another transliteration school
+    ("Moola" for "Mula") and would otherwise collapse to a bare «o».
+    """
+    text = re.sub(r"[^a-z]", "", (name or "").lower()).replace("sh", "s").replace("v", "w")
+    return re.sub(r"(.)\1+", r"\1", text.replace("oo", "u"))
 
 
 def _same_nakshatra(first: str, second: str) -> bool:
@@ -197,11 +205,14 @@ def _same_nakshatra(first: str, second: str) -> bool:
     they keep: vedic-horo writes "Uttarabhadra" where the full name is
     "Uttara Bhadrapada". One being a prefix of the other is the same
     nakshatra, not a disagreement — and a checker that flags matching data
-    teaches people to ignore it.
+    teaches people to ignore it. The prefix needs five letters to count,
+    which is why equality is tested first: Mula is four.
     """
     a, b = _normalise(first), _normalise(second)
     if not a or not b:
         return False
+    if a == b:
+        return True
     shorter, longer = sorted((a, b), key=len)
     return longer.startswith(shorter) and len(shorter) >= 5
 
@@ -443,8 +454,6 @@ def _compare_jyotishganit(report: Report, client: Client, collection: dict[str, 
                  "переносить в отчёт как параметр расчёта",
         ))
 
-    _explain_ascendant(report, site, local, true_longitudes)
-
     for code in ("Ra", "Ke"):
         here, there = site.get(code), local.get(code)
         if not here or not there:
@@ -482,6 +491,10 @@ def _compare_jyotishganit(report: Report, client: Client, collection: dict[str, 
             local=f"{there['nakshatra']} {there['pada']}",
             note="" if same else "**разные** — проверьте границу пады",
         ))
+
+    # После строк накшатр: объяснение Лагны снимает и их, а найти можно
+    # только то, что уже добавлено.
+    _explain_ascendant(report, site, local, true_longitudes)
 
     site_sav = ((collection.get("show-info-D1") or {}).get("ashtakavarga") or {}).get("sav") or []
     local_sav_raw = (chart.get("ashtakavarga") or {}).get("sav") or {}
@@ -745,6 +758,12 @@ def _explain_ascendant(report: Report, site: dict[str, Any], local: dict[str, An
         finding.note += (f" — объяснено: равно ошибке заявленной айанамши jyotishganit "
                          f"({slip:+.1f}′); библиотека вычитает из тропической Лагны "
                          "заявленное значение, а из планет — фактическое. Лагна сайта верна.")
+        # Полградуса хватает, чтобы сместить паду: та же ошибка, та же причина.
+        pada = next((f for f in report.findings if f.subject == "As: накшатра и пада"), None)
+        if pada is not None and pada.status != OK:
+            pada.status = OK
+            pada.note = ("расходится из-за той же ошибки айанамши jyotishganit "
+                         f"({slip:+.1f}′ сдвигают Лагну через границу пады); у сайта верно")
 
 
 def render(report: Report) -> str:

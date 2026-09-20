@@ -53,6 +53,37 @@ NOT_SUPPLIED = "НЕ ПРИСЛАНО ПОЛЬЗОВАТЕЛЕМ"
 #: only such answer seen so far was 98 bytes of a label with nothing after it.
 EMPTY_ANSWER_BYTES = 400
 
+#: Marker for a response that arrived and parsed without raising, and still
+#: cannot be what it claims to be.
+SUSPECT = "РАЗБОР НЕ УДАЛСЯ"
+
+
+def suspect_reason(key: str, payload: dict[str, Any]) -> str | None:
+    """Why this answer cannot be a real chart, or None if it looks like one.
+
+    A parser that mis-reads a column does not raise: it returns the same
+    shape with holes in it, and the holes travel all the way into the
+    reading. It happened: an older build of ``vedic_parser`` resolved the
+    fourteen-column planets table by counting instead of by its header, so
+    for two charts out of three the nakshatra, the house, the lordships and
+    the Shadbala of every planet came back empty — and the collection
+    reported «получено 25, пропусков 0».
+    """
+    if key != "show-info-D1":
+        return None
+    # Осторожно с формой: страж, падающий на неожиданных данных, хуже дыры,
+    # которую он стережёт.
+    planets = [p for p in (payload.get("planets") or []) if isinstance(p, dict)]
+    if not planets:
+        return None
+    missing = [name for name in ("nakshatra", "house")
+               if all(planet.get(name) is None for planet in planets)]
+    if len(missing) == 2:
+        return ("у всех планет пусты дом и накшатра — так карта выглядеть не может; "
+                "похоже на разбор таблицы не по тем колонкам (проверьте версию "
+                "vedic-parser)")
+    return None
+
 #: Site action -> the name ``vedic_parser.api`` uses (or would use) for it.
 #: Actions absent from the installed parser are handled, not assumed away.
 API_NAMES = {
@@ -389,6 +420,9 @@ def collect(
         )
         result.data[request.key] = payload
         result.fetched.append(request.key)
+        reason = suspect_reason(request.key, payload)
+        if reason:
+            result.gaps.append(Gap(request.key, SUSPECT, reason, section))
 
     _write_cache_identity(client)
     return result

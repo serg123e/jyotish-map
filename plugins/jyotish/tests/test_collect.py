@@ -304,3 +304,41 @@ def test_source_local_takes_everything_the_backend_offers(client: Client, monkey
     result = collect(client, plan=plan, probe=False, source="local")
     assert result.local == ["show-chart-D60"]
     assert result.data["show-info-D1"] == {"from": "site"}        # never local
+
+
+# ---- an answer that parsed but cannot be a chart -----------------------------
+
+
+def _planets(**fields):
+    return {"planets": [{"code": c, **fields} for c in ("As", "Su", "Mo")]}
+
+
+def test_a_planets_table_without_houses_or_nakshatras_is_reported(client: Client, monkeypatch) -> None:
+    """A stale parser read the columns by counting and returned holes, not an error."""
+    hollow = _planets(nakshatra=None, house=None)
+    _stub_api(monkeypatch, show_info=lambda session, chart, **kw: hollow)
+    monkeypatch.setattr(collect_module, "_ensure_session", lambda c, s, t: (object(), 0.0))
+    result = collect(client, plan=[Request("show-info", {"divisional": "D1"})],
+                     probe=False, source="site")
+    assert result.data["show-info-D1"] is hollow          # данные сохранены как есть
+    assert [gap.marker for gap in result.gaps] == [collect_module.SUSPECT]
+    assert "vedic-parser" in result.gaps[0].reason
+
+
+def test_a_real_looking_table_raises_nothing(client: Client, monkeypatch) -> None:
+    full = _planets(nakshatra={"name": "Bharani"}, house=1)
+    _stub_api(monkeypatch, show_info=lambda session, chart, **kw: full)
+    monkeypatch.setattr(collect_module, "_ensure_session", lambda c, s, t: (object(), 0.0))
+    assert collect(client, plan=[Request("show-info", {"divisional": "D1"})],
+                   probe=False, source="site").gaps == []
+
+
+def test_one_missing_column_is_not_enough_to_cry_wolf() -> None:
+    """The ascendant legitimately has no house; a varga table has no nakshatra."""
+    from jyotish.collect import suspect_reason
+
+    assert suspect_reason("show-info-D1", _planets(nakshatra={"name": "Bharani"}, house=None)) is None
+    assert suspect_reason("show-info-D1", _planets(nakshatra=None, house=3)) is None
+    assert suspect_reason("show-info-D9", _planets(nakshatra=None, house=None)) is None
+    assert suspect_reason("show-info-D1", {"planets": []}) is None
+    assert suspect_reason("show-info-D1", {"planets": ["не словарь"]}) is None

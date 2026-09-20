@@ -428,3 +428,56 @@ def test_read_verified_is_empty_without_a_check(tmp_path) -> None:
     client = Client.from_dict({"slug": "t", "date": "20.03.1980", "time": "07:45:00",
                                "timezone": "+3", "latitude": "54.25", "longitude": "42.50"}, tmp_path)
     assert read_verified(client) == {}
+
+
+# ---- spellings the live charts turned up --------------------------------------
+
+
+def test_identical_short_names_are_the_same_nakshatra() -> None:
+    """Mula is four letters, and the prefix rule needs five: equality comes first."""
+    from jyotish.crosscheck import _same_nakshatra
+
+    assert _same_nakshatra("Mula", "Mula")
+    assert _same_nakshatra("Mula", "Moola")
+
+
+def test_a_compound_name_without_its_space_is_the_same_nakshatra() -> None:
+    """vedic-horo writes «Uttarashadha», jyotishganit «Uttara Ashadha»."""
+    from jyotish.crosscheck import _same_nakshatra
+
+    assert _same_nakshatra("Uttarashadha", "Uttara Ashadha")
+    assert _same_nakshatra("Purvashadha", "Purva Ashadha")
+
+
+def test_the_twenty_seven_stay_twenty_seven() -> None:
+    """No loosening may let two different nakshatras read as one."""
+    from jyotish.crosscheck import _same_nakshatra
+    from jyotish.local import NAKSHATRAS
+
+    for i, first in enumerate(NAKSHATRAS):
+        for second in NAKSHATRAS[i + 1:]:
+            assert not _same_nakshatra(first, second), (first, second)
+
+
+def test_the_explanation_runs_after_the_rows_it_relaxes() -> None:
+    """It relaxed nothing for a while: it ran before the pada row existed."""
+    import inspect
+
+    from jyotish import crosscheck
+
+    body = inspect.getsource(crosscheck._compare_jyotishganit)
+    assert body.index("накшатра и пада") < body.index("_explain_ascendant(report")
+
+
+def test_the_ascendant_pada_inherits_the_ayanamsa_explanation() -> None:
+    """Half a degree of slip moves the pada; the cause is the same one."""
+    from jyotish.crosscheck import _explain_ascendant
+
+    report = Report(local_ayanamsa=23.8470)
+    report.findings.append(Finding("As: сидерическая долгота", WARN, "", "", "-31.5′"))
+    report.findings.append(Finding("As: накшатра и пада", CONFLICT, "Anuradha 2", "Anuradha 1"))
+    site = {"As": {"sidereal": 216.7631}}
+    local = {"As": {"sidereal": 216.2376}, "Su": {"sidereal": 336.167}}
+    _explain_ascendant(report, site, local, {"Su": 336.167 + 23.3035})
+    assert [f.status for f in report.findings] == [OK, OK]
+    assert "той же ошибки айанамши" in report.findings[1].note
