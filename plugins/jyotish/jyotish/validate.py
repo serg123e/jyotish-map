@@ -415,6 +415,17 @@ def _find_chapter(
     return None
 
 
+def _cell(text: str) -> str:
+    """One table cell, on one line.
+
+    A detail can quote `chart.yaml`, and a YAML note is often several lines —
+    a newline inside a Markdown cell silently ends the row, so the rest of the
+    table shifts and the checklist becomes unreadable at exactly the moment it
+    reports something. A bare pipe does the same to the columns.
+    """
+    return " ".join(text.split()).replace("|", "\\|")
+
+
 def render(results: Sequence[Result]) -> str:
     """The checklist as a document, with the manual items still visible."""
     counts = {status: sum(1 for r in results if r.status == status)
@@ -434,11 +445,12 @@ def render(results: Sequence[Result]) -> str:
     ]
     for result in results:
         lines.append(
-            f"| {result.check.number} | {result.check.section} | {result.check.text} | "
-            f"{result.status} | {result.detail} |"
+            f"| {result.check.number} | {_cell(result.check.section)} | "
+            f"{_cell(result.check.text)} | {result.status} | {_cell(result.detail)} |"
         )
     failures = [r for r in results if r.failed]
     if failures:
         lines += ["", "## Провалы — исправить до вёрстки", ""]
-        lines += [f"{r.check.number}. **{r.check.text}** — {r.detail}" for r in failures]
+        lines += [f"{r.check.number}. **{r.check.text}** — {' '.join(r.detail.split())}"
+                  for r in failures]
     return "\n".join(lines).rstrip() + "\n"

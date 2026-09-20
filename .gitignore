@@ -13,3 +13,6 @@ hip_main.dat
 
 # Собранные бандлы скилла
 dist/
+
+# venv, который launcher поднимает, когда CLAUDE_PLUGIN_DATA не задан
+plugins/jyotish/.local/

@@ -265,3 +265,26 @@ def test_failures_get_their_own_section(tmp_path: Path) -> None:
     results = review(_client(tmp_path, "relatives"), REPORT, chart_patterns=_patterns())
     text = validate.render(results)
     assert "## Провалы — исправить до вёрстки" in text
+
+
+# ---- the table must survive a multi-line detail ----------------------------
+
+
+def test_a_multiline_detail_stays_inside_its_cell() -> None:
+    """A YAML note spans several lines; a newline in a cell ends the row."""
+    from jyotish.validate import BY_NUMBER, MANUAL, Result, render
+
+    text = render([Result(BY_NUMBER[19], MANUAL, "первая строка\nвторая строка\n\nтретья")])
+    rows = [line for line in text.splitlines() if line.startswith("| 19 ")]
+    assert len(rows) == 1
+    assert rows[0].endswith("|")
+    assert "первая строка вторая строка третья" in rows[0]
+
+
+def test_a_pipe_in_a_detail_does_not_add_a_column() -> None:
+    from jyotish.validate import BY_NUMBER, MANUAL, Result, render
+
+    text = render([Result(BY_NUMBER[19], MANUAL, "а | б")])
+    row = next(line for line in text.splitlines() if line.startswith("| 19 "))
+    assert row.count("|") - row.count(r"\|") == 6   # шесть границ ячеек, и ни одной лишней
+    assert r"а \| б" in row
